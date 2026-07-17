@@ -1,0 +1,62 @@
+{
+    "name": "shahirul22/laravel-pii-sanitizer",
+    "description": "A Laravel package for sanitizing PII in a database during local/dev workflows (e.g. after importing a production dump). Development-time tool only — never for production.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "pii",
+        "sanitize",
+        "anonymize",
+        "faker",
+        "database",
+        "gdpr"
+    ],
+    "authors": [
+        {
+            "name": "Shahirul Amin"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^11.0 || ^12.0",
+        "illuminate/database": "^11.0 || ^12.0",
+        "illuminate/console": "^11.0 || ^12.0",
+        "fakerphp/faker": "^1.23"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0 || ^10.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0",
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Shahirul22\\LaravelPiiSanitizer\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Shahirul22\\LaravelPiiSanitizer\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/pest"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Shahirul22\\LaravelPiiSanitizer\\PiiSanitizerServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

@@ -1,0 +1,20 @@
+/vendor/
+composer.lock
+
+# Testbench workbench skeleton app, if/when used for local package dev
+/workbench/
+
+.phpunit.result.cache
+.phpunit.cache/
+/build/
+/coverage/
+
+.env
+.env.backup
+
+.DS_Store
+Thumbs.db
+
+.idea/
+.vscode/
+*.log

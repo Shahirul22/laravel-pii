@@ -90,3 +90,26 @@ it('Sanitizer::for() accepts both a model instance and a model class-string', fu
     Sanitizer::for(FakeUser::class);
     expect($fake->received)->toBe(FakeUser::class);
 });
+
+it('returns an empty categorical() list by default', function () {
+    $sanitizer = new FakeSanitizer;
+
+    expect($sanitizer->categorical())->toBe([]);
+});
+
+it('lets a sanitizer declare categorical columns', function () {
+    $sanitizer = new class extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['status' => 'active'];
+        }
+
+        public function categorical(): array
+        {
+            return ['status'];
+        }
+    };
+
+    expect($sanitizer->categorical())->toBe(['status']);
+});

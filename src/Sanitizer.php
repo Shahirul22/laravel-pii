@@ -21,6 +21,17 @@ abstract class Sanitizer
     abstract public function fields(): array;
 
     /**
+     * Columns whose replacement values must preserve the column's original
+     * value distribution (R4.2). Each entry MUST also appear in fields().
+     *
+     * @return list<string>
+     */
+    public function categorical(): array
+    {
+        return [];
+    }
+
+    /**
      * Resolve the sanitizer for a given model (instance or class-string),
      * or null when the model has no sanitizer.
      */

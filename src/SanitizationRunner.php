@@ -84,6 +84,12 @@ class SanitizationRunner
         $automatic = $this->sizer->wasAutomatic();
         $expectedChunks = (int) ceil($this->sizer->countFor($model) / $size);
 
+        $options->onProgress?->__invoke(new ProgressEvent(
+            modelClass: $modelClass,
+            table: $table,
+            expectedChunks: $expectedChunks,
+        ));
+
         $chunks = [];
         $rowsScanned = 0;
         /** @var array<string, int> $columnCounts */
@@ -91,7 +97,7 @@ class SanitizationRunner
         $index = 0;
 
         $model->newQuery()->chunkById($size, function ($rows) use (
-            &$chunks, &$rowsScanned, &$columnCounts, &$index, $sanitizer, $options
+            &$chunks, &$rowsScanned, &$columnCounts, &$index, $sanitizer, $options, $modelClass, $table, $expectedChunks
         ) {
             $index++;
 
@@ -99,6 +105,14 @@ class SanitizationRunner
 
             $chunks[] = $chunk;
             $rowsScanned += $rows->count();
+
+            $options->onProgress?->__invoke(new ProgressEvent(
+                modelClass: $modelClass,
+                table: $table,
+                expectedChunks: $expectedChunks,
+                chunk: $chunk,
+                rowsProcessed: $rowsScanned,
+            ));
 
             if ($chunk->status !== ChunkStatus::Completed) {
                 return false;

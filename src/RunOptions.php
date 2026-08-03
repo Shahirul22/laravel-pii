@@ -12,6 +12,7 @@ final class RunOptions
 {
     /**
      * @param  list<class-string<Model>>|null  $models
+     * @param  (\Closure(ProgressEvent): void)|null  $onProgress
      */
     public function __construct(
         public readonly ?int $chunkSize = null,
@@ -19,5 +20,6 @@ final class RunOptions
         public readonly bool $force = false,
         public readonly bool $confirmed = false,
         public readonly ?array $models = null,
+        public readonly ?\Closure $onProgress = null,
     ) {}
 }

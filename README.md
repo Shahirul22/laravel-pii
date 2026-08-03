@@ -1,26 +1,24 @@
 # Laravel PII Sanitizer
 
-`shahirul22/laravel-pii-sanitizer` sanitizes PII columns in your database during local and development workflows — for example, right after importing a production dump into your local environment. You declare, per Eloquent model, a class-based `Sanitizer` describing which columns hold PII and how to replace them, then run a single Artisan command.
+`shahirul22/laravel-pii-sanitizer` sanitizes PII columns in your database during local and development workflows, for example right after importing a production dump into your local environment. You declare, per Eloquent model, a class-based `Sanitizer` describing which columns hold PII and how to replace them, then run a single Artisan command.
 
 ## Safety guarantees
 
 > **This is a development-time tool. Never point it at a production database.** It rewrites rows in place and there is no undo.
 
-Three guarantees, stated before anything else:
-
-### 1. The environment guard refuses to run outside your allow-list
+### The environment guard refuses to run outside your allow-list
 
 The command refuses to run when the application environment is not listed in `config('pii.environments')` (default `['local', 'testing']`). The refusal is hard: it exits with code `1` and writes nothing.
 
-To override, you must pass `--force` **and** answer an interactive confirmation prompt:
+To override, you must pass `--force` and answer an interactive confirmation prompt:
 
 ```bash
 php artisan pii:sanitize --force
 ```
 
-The prompt defaults to **no**. Under `--no-interaction`, or anywhere without a TTY (CI, a scheduler, a deploy hook), the confirmation resolves to `false` — so `--force` on its own is never enough to sanitize outside your allow-list.
+The prompt defaults to no. Under `--no-interaction`, or anywhere without a TTY (CI, a scheduler, a deploy hook), the confirmation resolves to `false`, so `--force` on its own is never enough to sanitize outside your allow-list.
 
-### 2. `--dry-run` writes nothing
+### `--dry-run` writes nothing
 
 ```bash
 php artisan pii:sanitize --dry-run
@@ -28,26 +26,26 @@ php artisan pii:sanitize --dry-run
 
 Reports the number of rows that would be sanitized per model, plus a per-column breakdown of how many rows each column would change. It opens no transaction and issues no write. Use it first, every time.
 
-### 3. Unsafe columns are rejected before a single row is read
+### Unsafe columns are rejected before a single row is read
 
-Foreign-key columns and columns referenced by another table's foreign key are rejected at sanitizer-resolution time — before the engine reads any row — rather than being rewritten. Rewriting a referenced key would break relational integrity, so v1 refuses instead.
+Foreign-key columns, and columns referenced by another table's foreign key, are rejected at sanitizer-resolution time, before the engine reads any row, rather than being rewritten. Rewriting a referenced key would break relational integrity, so the package refuses instead.
 
 ## Requirements
 
 - PHP `^8.2`
 - Laravel (`illuminate/*`) `^11.0 || ^12.0 || ^13.0`
 
-v1 operates on your **single default database connection** only.
+The package operates on your single default database connection only.
 
 ## Installation
 
-Install as a dev dependency — this package has no place in a production build:
+Install as a dev dependency. This package has no place in a production build:
 
 ```bash
 composer require --dev shahirul22/laravel-pii-sanitizer
 ```
 
-`Shahirul22\LaravelPiiSanitizer\PiiSanitizerServiceProvider` is registered through Laravel's package auto-discovery, so **no manual provider registration is required**.
+`Shahirul22\LaravelPiiSanitizer\PiiSanitizerServiceProvider` is registered through Laravel's package auto-discovery, so you don't need to register the provider manually.
 
 Publish the config file:
 
@@ -55,7 +53,7 @@ Publish the config file:
 php artisan vendor:publish --tag=pii-config
 ```
 
-This writes `config/pii.php`. Publishing is optional in principle — the package merges its own defaults — but you will need the published file in practice, because `pii.models` defaults to an empty list and nothing is sanitized until you populate it.
+This writes `config/pii.php`. Publishing is optional in principle, since the package merges its own defaults, but you'll need the published file in practice: `pii.models` defaults to an empty list and nothing is sanitized until you populate it.
 
 (Equivalent, if you prefer targeting the provider: `php artisan vendor:publish --provider="Shahirul22\LaravelPiiSanitizer\PiiSanitizerServiceProvider"`.)
 
@@ -65,17 +63,17 @@ This writes `config/pii.php`. Publishing is optional in principle — the packag
 
 | Key | Default | Meaning |
 |---|---|---|
-| `models` | `[]` | The explicit, ordered list of model classes the engine walks. There is no filesystem auto-discovery in v1 — an empty list yields an empty run report, not an error. |
+| `models` | `[]` | The explicit, ordered list of model classes the engine walks. There is no filesystem auto-discovery, so an empty list yields an empty run report rather than an error. |
 | `sanitizers` | `[]` | Explicit `model-FQCN => sanitizer-FQCN` overrides. An entry here always beats the `App\Sanitizers\{Model}Sanitizer` convention. |
-| `protected_columns` | `['created_at', 'updated_at', 'deleted_at']` | Audit/temporal columns never written unless you explicitly declare them in a `fields()` map. Merged with each model's own timestamp columns. |
+| `protected_columns` | `['created_at', 'updated_at', 'deleted_at']` | Audit and temporal columns never written unless you explicitly declare them in a `fields()` map. Merged with each model's own timestamp columns. |
 | `environments` | `['local', 'testing']` | The environment guard's allow-list. |
-| `chunk` | `['size' => env('PII_CHUNK_SIZE'), 'min' => 500, 'max' => 5000, 'target_chunks' => 20]` | `size` is `null` by default, meaning chunks are sized automatically; `min`, `max`, and `target_chunks` tune the automatic algorithm. |
+| `chunk` | `['size' => env('PII_CHUNK_SIZE'), 'min' => 500, 'max' => 5000, 'target_chunks' => 20]` | `size` is `null` by default, meaning chunks are sized automatically. `min`, `max`, and `target_chunks` tune the automatic algorithm. |
 
 Set `PII_CHUNK_SIZE` in your `.env` to force a fixed chunk size. `env()` is called only inside `config/pii.php`, so `php artisan config:cache` resolves correctly.
 
 ### Overriding sanitizer resolution
 
-A model's sanitizer is normally found by convention (see below). When it is not — a model outside `App\Models`, a third-party model, or a sanitizer you want to swap — map it explicitly:
+A model's sanitizer is normally found by convention (see below). When it isn't, for a model outside `App\Models`, a third-party model, or a sanitizer you want to swap, map it explicitly:
 
 ```php
 'sanitizers' => [
@@ -108,17 +106,17 @@ class UserSanitizer extends Sanitizer
 }
 ```
 
-`fields()` maps a column name to a value definition. Here both values are Faker method names — the simplest of the four supported forms. `safeEmail` is used rather than `email` so the generated addresses land in reserved example domains and can never reach a real inbox.
+`fields()` maps a column name to a value definition. Here both values are Faker method names, the simplest of the four supported forms. `safeEmail` is used instead of `email` so the generated addresses land in reserved example domains and can never reach a real inbox.
 
 ### Resolution is by convention
 
-Because the class is `App\Sanitizers\UserSanitizer`, it is discovered automatically for `App\Models\User` via the `App\Sanitizers\{Model}Sanitizer` convention. **No `pii.sanitizers` entry is needed.**
+Because the class is `App\Sanitizers\UserSanitizer`, it's discovered automatically for `App\Models\User` via the `App\Sanitizers\{Model}Sanitizer` convention. No `pii.sanitizers` entry is needed.
 
 Resolution order:
 
-1. An explicit `config('pii.sanitizers')` entry for the model — always wins.
+1. An explicit `config('pii.sanitizers')` entry for the model, which always wins.
 2. The conventional `App\Sanitizers\{Model}Sanitizer` class, if it exists.
-3. Otherwise the model is skipped, and reported as `skipped — no sanitizer`.
+3. Otherwise the model is skipped and reported as `skipped — no sanitizer`.
 
 ### Register the model
 
@@ -183,27 +181,27 @@ App\Models\User: 1/1 chunks [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
  WARN  Dry run complete — nothing was written to the database.
 ```
 
-A progress bar is rendered per model while chunks are processed (one line per model, redrawn in place); the exact number of chunks depends on row count and the configured/automatic chunk size.
+A progress bar is rendered per model while chunks are processed, one line per model, redrawn in place. The exact number of chunks depends on row count and the configured or automatic chunk size.
 
 ## Value definition forms
 
-A `fields()` value may be any of four things:
+A `fields()` value can be any of four things.
 
-**1. A static value** — any scalar, array, enum, or `null`:
+A static value: any scalar, array, enum, or `null`.
 
 ```php
 'phone' => null,
 'country' => 'MY',
 ```
 
-**2. A closure** receiving the current value, a Faker generator, and the model row:
+A closure receiving the current value, a Faker generator, and the model row:
 
 ```php
 'email' => fn (mixed $value, \Faker\Generator $faker, \Illuminate\Database\Eloquent\Model $row): mixed
     => $faker->userName().'@example.test',
 ```
 
-**3. A class-string implementing `ValueGenerator`** — for logic reused across fields or models:
+A class-string implementing `ValueGenerator`, for logic reused across fields or models:
 
 ```php
 <?php
@@ -227,7 +225,7 @@ class RedactedName implements ValueGenerator
 'name' => \App\Sanitizers\RedactedName::class,
 ```
 
-**4. A Faker method name** — the form the example above uses:
+A Faker method name, the form the example above uses:
 
 ```php
 'name' => 'name',
@@ -245,9 +243,9 @@ public function categorical(): array
 }
 ```
 
-## Limitations (v1)
+## Known limitations
 
-- **Flat columns only.** Foreign-key columns, and columns referenced by another table's foreign key, are rejected at sanitizer-resolution time — before any row is read. Rewriting a referenced key risks breaking relational integrity, so v1 refuses rather than guessing.
+- **Flat columns only.** Foreign-key columns, and columns referenced by another table's foreign key, are rejected at sanitizer-resolution time, before any row is read. Rewriting a referenced key risks breaking relational integrity, so the package refuses rather than guessing.
 - **Single default connection.** The engine operates on your default database connection only.
 - **No model auto-discovery.** `pii.models` is an explicit, ordered list; nothing is discovered by scanning the filesystem.
 - **Development-time only.** There is no production story, by design.

@@ -7,6 +7,7 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
 
 class SanitizerResolver implements SanitizerResolverContract
@@ -62,7 +63,9 @@ class SanitizerResolver implements SanitizerResolverContract
     {
         $instance = app($sanitizerClass);
 
-        assert($instance instanceof Sanitizer);
+        if (! $instance instanceof Sanitizer) {
+            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass);
+        }
 
         $this->guard->assertSafe($instance, $model);
         $this->qualityGuard->assertValid($instance, $model);

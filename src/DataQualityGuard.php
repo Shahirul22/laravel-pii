@@ -5,6 +5,7 @@ namespace Shahirul22\LaravelPiiSanitizer;
 use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 
 /**
  * Fail-fast validation of a Sanitizer's categorical() declaration (R4.2),
@@ -31,7 +32,9 @@ class DataQualityGuard implements DataQualityGuardContract
         $modelClass = is_object($model) ? $model::class : $model;
         $instance = is_object($model) ? $model : app($modelClass);
 
-        assert($instance instanceof Model);
+        if (! $instance instanceof Model) {
+            throw InvalidConfigurationException::invalidModelClass($modelClass);
+        }
 
         $fields = $sanitizer->fields();
 
@@ -42,7 +45,7 @@ class DataQualityGuard implements DataQualityGuardContract
         }
 
         $table = $instance->getTable();
-        $constraints = $this->inspector->uniqueConstraints($table);
+        $constraints = $this->inspector->uniqueConstraints($table, $instance->getConnectionName());
 
         foreach ($categorical as $column) {
             foreach ($constraints as $constraint) {

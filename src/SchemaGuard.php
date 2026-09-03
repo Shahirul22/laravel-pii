@@ -6,10 +6,13 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
 
 class SchemaGuard implements SchemaGuardContract
 {
+    /** Every cache below is keyed by "<connection-name>.<canonical-table>" so a second connection's schema never poisons or is masked by the first's. */
+
     /** @var array<string, list<string>> */
     private array $columnCache = [];
 
@@ -20,8 +23,8 @@ class SchemaGuard implements SchemaGuardContract
     private array $outboundTargets = [];
 
     /**
-     * Raw getForeignKeys() results keyed by physical table name, shared between
-     * the outbound-FK lookup and the inbound-FK global sweep so a table's
+     * Raw getForeignKeys() results keyed by cache key, shared between the
+     * outbound-FK lookup and the inbound-FK global sweep so a table's
      * foreign keys are fetched from the schema at most once.
      *
      * @var array<string, list<array{name: string|null, columns: list<string>, foreign_schema: string|null, foreign_table: string, foreign_columns: list<string>, on_update: string, on_delete: string}>>
@@ -29,15 +32,17 @@ class SchemaGuard implements SchemaGuardContract
     private array $foreignKeysCache = [];
 
     /**
-     * Connection-wide index of inbound references: target short table name =>
-     * column => referencing physical table name. Built lazily, at most once,
-     * by sweeping every table in the schema a single time.
+     * Per-connection index of inbound references: connection name => target
+     * short table name => column => referencing physical table name. Built
+     * lazily, at most once per connection, by sweeping every table in that
+     * connection's schema a single time.
      *
-     * @var array<string, array<string, string>>
+     * @var array<string, array<string, array<string, string>>>
      */
     private array $inboundIndex = [];
 
-    private bool $inboundIndexBuilt = false;
+    /** @var array<string, true> */
+    private array $inboundIndexBuilt = [];
 
     public function __construct(
         private readonly DatabaseManager $db,
@@ -48,7 +53,9 @@ class SchemaGuard implements SchemaGuardContract
         $modelClass = is_object($model) ? $model::class : $model;
         $instance = is_object($model) ? $model : app($modelClass);
 
-        assert($instance instanceof Model);
+        if (! $instance instanceof Model) {
+            throw InvalidConfigurationException::invalidModelClass($modelClass);
+        }
 
         $columns = array_keys($sanitizer->fields());
 
@@ -57,7 +64,7 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         $table = $instance->getTable();
-        $connection = $this->db->connection();
+        $connection = $this->db->connection($instance->getConnectionName());
 
         $existing = $this->tableColumns($connection, $table);
 
@@ -68,6 +75,7 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         $outbound = $this->outboundForeignKeyColumns($connection, $table);
+        $cacheKey = $this->cacheKey($connection, $table);
 
         foreach ($columns as $column) {
             if (in_array($column, $outbound, true)) {
@@ -76,7 +84,7 @@ class SchemaGuard implements SchemaGuardContract
                     $column,
                     $sanitizer::class,
                     $table,
-                    $this->outboundTargets[$table][$column]
+                    $this->outboundTargets[$cacheKey][$column]
                 );
             }
         }
@@ -94,6 +102,16 @@ class SchemaGuard implements SchemaGuardContract
                 );
             }
         }
+
+        // The primary key drives chunkById()'s paging/ordering (R5.2); rewriting
+        // it mid-run would corrupt the chunk cursor for that same read. Checked
+        // last so a primary key that is also an inbound-referenced column (the
+        // common case) still surfaces the more specific FK message above.
+        $primaryKey = $instance->getKeyName();
+
+        if (in_array($primaryKey, $columns, true)) {
+            throw UnsafeColumnException::primaryKey($modelClass, $primaryKey, $sanitizer::class, $table);
+        }
     }
 
     /**
@@ -101,14 +119,16 @@ class SchemaGuard implements SchemaGuardContract
      */
     private function tableColumns(Connection $connection, string $table): array
     {
-        if (isset($this->columnCache[$table])) {
-            return $this->columnCache[$table];
+        $cacheKey = $this->cacheKey($connection, $table);
+
+        if (isset($this->columnCache[$cacheKey])) {
+            return $this->columnCache[$cacheKey];
         }
 
         /** @var list<array{name: string, type: string, type_name: string, nullable: bool, default: mixed, auto_increment: bool, comment: string|null, generation: array<string, mixed>|null}> $columns */
         $columns = $connection->getSchemaBuilder()->getColumns($table);
 
-        return $this->columnCache[$table] = array_column($columns, 'name');
+        return $this->columnCache[$cacheKey] = array_column($columns, 'name');
     }
 
     /**
@@ -116,8 +136,10 @@ class SchemaGuard implements SchemaGuardContract
      */
     private function outboundForeignKeyColumns(Connection $connection, string $table): array
     {
-        if (isset($this->outboundCache[$table])) {
-            return $this->outboundCache[$table];
+        $cacheKey = $this->cacheKey($connection, $table);
+
+        if (isset($this->outboundCache[$cacheKey])) {
+            return $this->outboundCache[$cacheKey];
         }
 
         $canonical = $this->canonicalTableName($connection, $table);
@@ -129,11 +151,11 @@ class SchemaGuard implements SchemaGuardContract
         foreach ($foreignKeys as $entry) {
             foreach ($entry['columns'] as $column) {
                 $columns[] = $column;
-                $this->outboundTargets[$table][$column] = $this->shortTableName($entry['foreign_table']);
+                $this->outboundTargets[$cacheKey][$column] = $this->shortTableName($entry['foreign_table']);
             }
         }
 
-        return $this->outboundCache[$table] = array_values(array_unique($columns));
+        return $this->outboundCache[$cacheKey] = array_values(array_unique($columns));
     }
 
     /**
@@ -145,14 +167,16 @@ class SchemaGuard implements SchemaGuardContract
      */
     private function rawForeignKeys(Connection $connection, string $table): array
     {
-        if (isset($this->foreignKeysCache[$table])) {
-            return $this->foreignKeysCache[$table];
+        $cacheKey = $this->cacheKey($connection, $table);
+
+        if (isset($this->foreignKeysCache[$cacheKey])) {
+            return $this->foreignKeysCache[$cacheKey];
         }
 
         /** @var list<array{name: string|null, columns: list<string>, foreign_schema: string|null, foreign_table: string, foreign_columns: list<string>, on_update: string, on_delete: string}> $foreignKeys */
         $foreignKeys = $connection->getSchemaBuilder()->getForeignKeys($table);
 
-        return $this->foreignKeysCache[$table] = $foreignKeys;
+        return $this->foreignKeysCache[$cacheKey] = $foreignKeys;
     }
 
     /**
@@ -162,19 +186,25 @@ class SchemaGuard implements SchemaGuardContract
     {
         $this->ensureInboundIndex($connection);
 
-        return $this->inboundIndex[$this->canonicalTableName($connection, $table)] ?? [];
+        $connectionKey = $connection->getName();
+        $canonical = $this->canonicalTableName($connection, $table);
+
+        return $this->inboundIndex[$connectionKey][$canonical] ?? [];
     }
 
     /**
      * Builds the connection-wide inbound-reference index at most once per
-     * instance: a single getTableListing() sweep, and a single
-     * getForeignKeys() call per listed table (shared with the outbound
-     * cache via rawForeignKeys()), rather than repeating both per checked
-     * table.
+     * (instance, connection): a single getTableListing() sweep, and a
+     * single getForeignKeys() call per listed table (shared with the
+     * outbound cache via rawForeignKeys()), rather than repeating both per
+     * checked table. Indexed per connection name so a second connection's
+     * sweep never mixes with or is skipped in favor of the first's.
      */
     private function ensureInboundIndex(Connection $connection): void
     {
-        if ($this->inboundIndexBuilt) {
+        $connectionKey = $connection->getName();
+
+        if (isset($this->inboundIndexBuilt[$connectionKey])) {
             return;
         }
 
@@ -194,12 +224,17 @@ class SchemaGuard implements SchemaGuardContract
                 }
 
                 foreach ($entry['foreign_columns'] as $column) {
-                    $this->inboundIndex[$targetShort][$column] = $physicalShort;
+                    $this->inboundIndex[$connectionKey][$targetShort][$column] = $physicalShort;
                 }
             }
         }
 
-        $this->inboundIndexBuilt = true;
+        $this->inboundIndexBuilt[$connectionKey] = true;
+    }
+
+    private function cacheKey(Connection $connection, string $table): string
+    {
+        return $connection->getName().'.'.$this->canonicalTableName($connection, $table);
     }
 
     private function shortTableName(string $name): string

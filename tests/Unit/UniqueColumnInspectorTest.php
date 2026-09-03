@@ -82,4 +82,57 @@ namespace {
 
         expect(DB::getQueryLog())->toBe([]);
     });
+
+    it('reads constraints from the given connection, not the default connection', function () {
+        config()->set('database.connections.uci_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        // Same table name on both connections, but only the secondary
+        // connection's copy carries a unique constraint on 'code' — a
+        // pre-fix implementation (always reading the default connection)
+        // would report zero constraints here, passing this assertion
+        // vacuously the way a same-shape cross-connection test would.
+        Schema::create('uci_divergent', function ($table) {
+            $table->id();
+            $table->string('code')->nullable();
+        });
+
+        Schema::connection('uci_secondary')->create('uci_divergent', function ($table) {
+            $table->id();
+            $table->string('code')->unique();
+        });
+
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        expect($inspector->uniqueConstraints('uci_divergent'))->not->toContain(['code']);
+        expect($inspector->uniqueConstraints('uci_divergent', 'uci_secondary'))->toContain(['code']);
+    });
+
+    it('memoizes per (connection, table), not per table alone', function () {
+        config()->set('database.connections.uci_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        Schema::create('uci_divergent', function ($table) {
+            $table->id();
+            $table->string('code')->nullable();
+        });
+
+        Schema::connection('uci_secondary')->create('uci_divergent', function ($table) {
+            $table->id();
+            $table->string('code')->unique();
+        });
+
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        $inspector->uniqueConstraints('uci_divergent');
+        $secondaryResult = $inspector->uniqueConstraints('uci_divergent', 'uci_secondary');
+
+        expect($secondaryResult)->toContain(['code']);
+    });
 }

@@ -59,6 +59,11 @@ namespace {
             return ['email' => 'safeEmail'];
         }
     }
+
+    class DqGuardNotAModel
+    {
+        //
+    }
 }
 
 namespace {
@@ -67,6 +72,7 @@ namespace {
     use Illuminate\Support\Facades\Schema;
     use Shahirul22\LaravelPiiSanitizer\DataQualityGuard;
     use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
+    use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
     use Shahirul22\LaravelPiiSanitizer\Sanitizer;
     use Shahirul22\LaravelPiiSanitizer\UniqueColumnInspector;
 
@@ -161,5 +167,16 @@ namespace {
         dqGuard()->assertValid(new DqGuardCleanSanitizer, new DqGuardUser);
 
         expect(true)->toBeTrue();
+    });
+
+    it('throws InvalidConfigurationException with the offending class named, when the model resolves to a non-Model instance', function () {
+        try {
+            dqGuard()->assertValid(new DqGuardCleanSanitizer, DqGuardNotAModel::class);
+
+            test()->fail('Expected InvalidConfigurationException to be thrown.');
+        } catch (InvalidConfigurationException $exception) {
+            expect($exception->getMessage())->toContain(DqGuardNotAModel::class);
+            expect($exception->getMessage())->toContain('not a valid Eloquent model class');
+        }
     });
 }

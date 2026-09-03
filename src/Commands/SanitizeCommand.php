@@ -6,6 +6,7 @@ use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\ChunkReport;
 use Shahirul22\LaravelPiiSanitizer\ChunkStatus;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeEnvironmentException;
 use Shahirul22\LaravelPiiSanitizer\ModelReport;
 use Shahirul22\LaravelPiiSanitizer\ProgressEvent;
@@ -54,17 +55,22 @@ class SanitizeCommand extends Command
         );
 
         $resolvedModels = $options->models ?? config('pii.models', []);
-        $count = count($resolvedModels);
+
+        if (! is_array($resolvedModels)) {
+            $this->components->error(InvalidConfigurationException::modelsNotAList()->getMessage());
+
+            return self::FAILURE;
+        }
 
         if ($options->dryRun) {
             $this->components->info('Dry run — no data will be written.');
         }
 
-        $this->components->info(sprintf('Sanitizing %d model(s).', $count));
+        $this->components->info(sprintf('Sanitizing %d model(s).', count($resolvedModels)));
 
         try {
             $report = $runner->run($options);
-        } catch (UnsafeEnvironmentException $e) {
+        } catch (UnsafeEnvironmentException|InvalidConfigurationException $e) {
             $this->components->error($e->getMessage());
 
             return self::FAILURE;
@@ -212,7 +218,9 @@ class SanitizeCommand extends Command
             }
         }
 
-        assert($failing instanceof ModelReport);
+        if (! $failing instanceof ModelReport) {
+            return;
+        }
 
         $this->components->error(sprintf('Sanitize run failed while processing %s.', $failing->modelClass));
 

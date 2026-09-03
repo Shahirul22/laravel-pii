@@ -30,9 +30,9 @@ class UniqueValueTracker
      *
      * @param  list<string>  $columns
      */
-    public function seed(string $table, array $columns): void
+    public function seed(string $table, array $columns, ?string $connection = null): void
     {
-        $namespace = $this->namespaceKey($table, $columns);
+        $namespace = $this->namespaceKey($table, $columns, $connection);
 
         if (isset($this->seeded[$namespace])) {
             return;
@@ -41,9 +41,11 @@ class UniqueValueTracker
         // Mark seeded first so a re-entrant call cannot re-query.
         $this->seeded[$namespace] = true;
 
-        $rows = $this->db->connection()->table($table)->distinct()->get($columns);
-
-        foreach ($rows as $row) {
+        // cursor() streams rows one at a time from the DB driver rather than
+        // materializing the full distinct set in memory up front — the whole
+        // point of chunking elsewhere in the engine (R5.2) would otherwise be
+        // defeated by this single unbounded ->get().
+        foreach ($this->db->connection($connection)->table($table)->select($columns)->distinct()->cursor() as $row) {
             $attributes = (array) $row;
 
             $values = array_map(
@@ -59,9 +61,9 @@ class UniqueValueTracker
      * @param  list<string>  $columns
      * @param  list<mixed>  $values
      */
-    public function isTaken(string $table, array $columns, array $values): bool
+    public function isTaken(string $table, array $columns, array $values, ?string $connection = null): bool
     {
-        $namespace = $this->namespaceKey($table, $columns);
+        $namespace = $this->namespaceKey($table, $columns, $connection);
 
         return isset($this->taken[$namespace][$this->tupleKey($values)]);
     }
@@ -70,9 +72,9 @@ class UniqueValueTracker
      * @param  list<string>  $columns
      * @param  list<mixed>  $values
      */
-    public function claim(string $table, array $columns, array $values): void
+    public function claim(string $table, array $columns, array $values, ?string $connection = null): void
     {
-        $namespace = $this->namespaceKey($table, $columns);
+        $namespace = $this->namespaceKey($table, $columns, $connection);
 
         $this->taken[$namespace][$this->tupleKey($values)] = true;
     }
@@ -86,9 +88,9 @@ class UniqueValueTracker
     /**
      * @param  list<string>  $columns
      */
-    private function namespaceKey(string $table, array $columns): string
+    private function namespaceKey(string $table, array $columns, ?string $connection = null): string
     {
-        return $table."\x1e".implode("\x1f", $columns);
+        return ($connection ?? '')."\x1e".$table."\x1e".implode("\x1f", $columns);
     }
 
     /**

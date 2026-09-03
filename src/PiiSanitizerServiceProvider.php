@@ -17,7 +17,7 @@ class PiiSanitizerServiceProvider extends ServiceProvider
 
         $this->app->singleton(SchemaGuardContract::class, SchemaGuard::class);
         $this->app->singleton(DataQualityGuardContract::class, DataQualityGuard::class);
-        $this->app->bind(SanitizerResolverContract::class, SanitizerResolver::class);
+        $this->app->singleton(SanitizerResolverContract::class, SanitizerResolver::class);
 
         $this->app->singleton(UniqueColumnInspector::class);
         $this->app->singleton(UniqueValueTracker::class);

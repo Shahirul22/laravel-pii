@@ -2,21 +2,22 @@
 
 use Illuminate\Support\ServiceProvider;
 use Shahirul22\LaravelPiiSanitizer\Contracts\EnvironmentGuardContract;
+use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
 use Shahirul22\LaravelPiiSanitizer\EnvironmentGuard;
 use Shahirul22\LaravelPiiSanitizer\PiiSanitizerServiceProvider;
+use Shahirul22\LaravelPiiSanitizer\SanitizerResolver;
 
 it('exposes exactly the design-fixed top-level config keys', function () {
     $config = require __DIR__.'/../../config/pii.php';
 
-    expect(array_keys($config))->toBe(['sanitizers', 'protected_columns', 'models', 'environments', 'chunk']);
+    expect(array_keys($config))->toBe(['sanitizers', 'models', 'environments', 'chunk']);
     expect($config)->not->toHaveKey('connection');
 });
 
-it('leaves the two existing keys unchanged', function () {
+it('leaves the existing key unchanged', function () {
     $config = require __DIR__.'/../../config/pii.php';
 
     expect($config['sanitizers'])->toBe([]);
-    expect($config['protected_columns'])->toBe(['created_at', 'updated_at', 'deleted_at']);
 });
 
 it('fixes the new keys to their documented defaults', function () {
@@ -46,5 +47,13 @@ it('binds EnvironmentGuardContract as a singleton', function () {
     $second = app(EnvironmentGuardContract::class);
 
     expect($first)->toBeInstanceOf(EnvironmentGuard::class);
+    expect($first)->toBe($second);
+});
+
+it('binds SanitizerResolverContract as a singleton, consistent with its singleton dependencies', function () {
+    $first = app(SanitizerResolverContract::class);
+    $second = app(SanitizerResolverContract::class);
+
+    expect($first)->toBeInstanceOf(SanitizerResolver::class);
     expect($first)->toBe($second);
 });

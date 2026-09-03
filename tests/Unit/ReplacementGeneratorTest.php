@@ -55,6 +55,49 @@ namespace {
         }
     }
 
+    class RgObjectValueSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return [
+                'note' => fn () => new DateTime,
+            ];
+        }
+    }
+
+    class RgSecondaryConnectionUser extends Model
+    {
+        protected $connection = 'rg_secondary';
+
+        protected $table = 'rg_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class RgSecondaryEmailSanitizer extends Sanitizer
+    {
+        /** @var list<string> */
+        private array $pool;
+
+        public function __construct(array $pool)
+        {
+            $this->pool = $pool;
+        }
+
+        public function fields(): array
+        {
+            $pool = $this->pool;
+
+            return [
+                'email' => function () use (&$pool) {
+                    return array_shift($pool) ?? 'exhausted@example.com';
+                },
+            ];
+        }
+    }
+
     class RgCategoricalSanitizer extends Sanitizer
     {
         public function fields(): array
@@ -112,6 +155,7 @@ namespace {
     use Illuminate\Support\Facades\DB;
     use Illuminate\Support\Facades\Schema;
     use Shahirul22\LaravelPiiSanitizer\DistributionSampler;
+    use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
     use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
     use Shahirul22\LaravelPiiSanitizer\ReplacementGenerator;
     use Shahirul22\LaravelPiiSanitizer\UniqueColumnInspector;
@@ -272,6 +316,45 @@ namespace {
         foreach ($queries as $query) {
             expect($query)->not->toContain('distinct');
         }
+    });
+
+    it('seeds uniqueness from the row\'s own connection, not the default connection', function () {
+        config()->set('database.connections.rg_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        Schema::connection('rg_secondary')->create('rg_users', function ($table) {
+            $table->id();
+            $table->string('email')->unique();
+        });
+
+        DB::connection('rg_secondary')->table('rg_users')->insert(['email' => 'taken-on-secondary@example.com']);
+
+        // Also seed the SAME email on the default connection's rg_users so a
+        // pre-fix implementation (always seeding from the default
+        // connection) would find no collision and pass this value straight
+        // through — proving the assertion below actually distinguishes the
+        // two connections rather than passing vacuously.
+        DB::table('rg_users')->insert(['email' => 'not-taken-on-default@example.com']);
+
+        $sanitizer = new RgSecondaryEmailSanitizer(['taken-on-secondary@example.com', 'free@example.com']);
+        $generator = rgGenerator();
+        $faker = Factory::create();
+
+        $result = $generator->forRow($sanitizer, new RgSecondaryConnectionUser, $faker);
+
+        expect($result['email'])->toBe('free@example.com');
+    });
+
+    it('rejects a resolved value that is not scalar/null/array/enum before it reaches the database', function () {
+        $generator = rgGenerator();
+        $sanitizer = new RgObjectValueSanitizer;
+        $faker = Factory::create();
+
+        expect(fn () => $generator->forRow($sanitizer, new RgUser, $faker))
+            ->toThrow(InvalidReplacementValueException::class, 'note');
     });
 
     it('reset() clears run state so a value produced before it may be produced again', function () {

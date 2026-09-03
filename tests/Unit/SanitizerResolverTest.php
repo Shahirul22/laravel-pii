@@ -27,6 +27,11 @@ namespace {
         }
     }
 
+    class ResolverNotASanitizer
+    {
+        //
+    }
+
     class ResolverNullSchemaGuard implements SchemaGuardContract
     {
         public function assertSafe(Sanitizer $sanitizer, Model|string $model): void {}
@@ -89,6 +94,7 @@ namespace {
 
     use App\Models\ResolverConventionUser;
     use App\Sanitizers\ResolverConventionUserSanitizer;
+    use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
     use Shahirul22\LaravelPiiSanitizer\SanitizerResolver;
 
     it('returns null when neither config nor convention resolves', function () {
@@ -188,5 +194,38 @@ namespace {
         expect($resolver->resolve(ResolverFakeUser::class))->toBeNull();
         expect($qualityGuard->sanitizer)->toBeNull();
         expect($qualityGuard->model)->toBeNull();
+    });
+
+    it('throws InvalidConfigurationException when a pii.sanitizers entry does not resolve to a Sanitizer', function () {
+        config()->set('pii.sanitizers', [
+            ResolverFakeUser::class => ResolverNotASanitizer::class,
+        ]);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        expect(fn () => $resolver->resolve(ResolverFakeUser::class))
+            ->toThrow(InvalidConfigurationException::class, ResolverNotASanitizer::class);
+    });
+
+    it('falls through to the conventional class when a pii.sanitizers entry is an empty string', function () {
+        config()->set('pii.sanitizers', [
+            ResolverConventionUser::class => '',
+        ]);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        expect($resolver->resolve(ResolverConventionUser::class))
+            ->toBeInstanceOf(ResolverConventionUserSanitizer::class);
+    });
+
+    it('falls through to the conventional class when a pii.sanitizers entry is null', function () {
+        config()->set('pii.sanitizers', [
+            ResolverConventionUser::class => null,
+        ]);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        expect($resolver->resolve(ResolverConventionUser::class))
+            ->toBeInstanceOf(ResolverConventionUserSanitizer::class);
     });
 }

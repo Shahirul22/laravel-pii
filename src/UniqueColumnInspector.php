@@ -21,18 +21,20 @@ class UniqueColumnInspector
     /**
      * Every unique-or-primary constraint on the table, as its ordered
      * column tuple. A single-column constraint is a one-element tuple.
-     * Memoized per table for the instance lifetime.
+     * Memoized per (connection, table) for the instance lifetime.
      *
      * @return list<list<string>>
      */
-    public function uniqueConstraints(string $table): array
+    public function uniqueConstraints(string $table, ?string $connection = null): array
     {
-        if (isset($this->constraintCache[$table])) {
-            return $this->constraintCache[$table];
+        $cacheKey = ($connection ?? '').'.'.$table;
+
+        if (isset($this->constraintCache[$cacheKey])) {
+            return $this->constraintCache[$cacheKey];
         }
 
         /** @var list<array{name: string|null, columns: list<string>, type: string|null, unique: bool, primary: bool}> $indexes */
-        $indexes = $this->db->connection()->getSchemaBuilder()->getIndexes($table);
+        $indexes = $this->db->connection($connection)->getSchemaBuilder()->getIndexes($table);
 
         $tuples = [];
 
@@ -48,7 +50,7 @@ class UniqueColumnInspector
             $tuples[$key] = $tuple;
         }
 
-        return $this->constraintCache[$table] = array_values($tuples);
+        return $this->constraintCache[$cacheKey] = array_values($tuples);
     }
 
     /**
@@ -59,10 +61,10 @@ class UniqueColumnInspector
      * @param  list<string>  $declaredColumns
      * @return list<list<string>>
      */
-    public function constraintsAffecting(string $table, array $declaredColumns): array
+    public function constraintsAffecting(string $table, array $declaredColumns, ?string $connection = null): array
     {
         return array_values(array_filter(
-            $this->uniqueConstraints($table),
+            $this->uniqueConstraints($table, $connection),
             fn (array $tuple): bool => array_intersect($tuple, $declaredColumns) !== []
         ));
     }

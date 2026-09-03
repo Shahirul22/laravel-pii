@@ -34,35 +34,64 @@ class DistributionSampler
      *
      * @throws InvalidCategoricalColumnException
      */
-    public function profile(string $table, string $column, ?string $modelClass = null): array
+    public function profile(string $table, string $column, ?string $modelClass = null, ?string $connection = null): array
     {
-        $key = "{$table}.{$column}";
+        $key = ($connection ?? '').'.'.$table.'.'.$column;
 
         if (isset($this->profileCache[$key])) {
             return $this->profileCache[$key];
         }
 
-        $rows = $this->db->connection()->table($table)
+        // LIMIT one past the cap so the cardinality check below fails fast
+        // off a bounded result set, rather than materializing every group
+        // for a high-cardinality column before discovering it's not
+        // categorical (the full aggregation cost was previously paid
+        // either way).
+        $rows = $this->db->connection($connection)->table($table)
             ->select($column)
             ->selectRaw('count(*) as aggregate')
             ->groupBy($column)
+            ->limit(self::MAX_CATEGORIES + 1)
             ->get();
+
+        if ($rows->count() > self::MAX_CATEGORIES) {
+            throw InvalidCategoricalColumnException::tooManyCategories($modelClass ?? $table, $column, $table, $rows->count());
+        }
 
         $profile = [];
 
         foreach ($rows as $row) {
             $value = $row->{$column};
-            $profile[json_encode($value)] = [
+            $profile[$this->identityKey($value)] = [
                 'value' => $value,
                 'count' => (int) $row->aggregate,
             ];
         }
 
-        if (count($profile) > self::MAX_CATEGORIES) {
-            throw InvalidCategoricalColumnException::tooManyCategories($modelClass ?? $table, $column, $table, count($profile));
+        return $this->profileCache[$key] = $profile;
+    }
+
+    /**
+     * A stable, collision-resistant array-key for a raw column value. Not
+     * json_encode($value) directly: it returns false — silently coerced to
+     * the array key '' — for a string containing malformed/invalid UTF-8
+     * byte sequences, which a categorical column can plausibly hold when
+     * sourced from a legacy-encoded production dump (exactly the kind of
+     * input this package exists to sanitize). Distinct invalid-UTF-8 values
+     * would otherwise collapse into the same '' bucket, corrupting the
+     * profiled distribution. json_last_error() disambiguates a genuine
+     * encoding failure from json_encode() legitimately returning the
+     * 3-byte string "false" for the boolean false.
+     */
+    private function identityKey(mixed $value): string
+    {
+        $encoded = json_encode($value);
+
+        if ($encoded !== false || json_last_error() === JSON_ERROR_NONE) {
+            return $encoded;
         }
 
-        return $this->profileCache[$key] = $profile;
+        return 'raw:'.md5(serialize($value));
     }
 
     /**
@@ -73,9 +102,9 @@ class DistributionSampler
      *
      * @throws InvalidCategoricalColumnException
      */
-    public function sample(string $table, string $column, Generator $faker, ?string $modelClass = null): mixed
+    public function sample(string $table, string $column, Generator $faker, ?string $modelClass = null, ?string $connection = null): mixed
     {
-        $profile = $this->profile($table, $column, $modelClass);
+        $profile = $this->profile($table, $column, $modelClass, $connection);
 
         if ($profile === []) {
             return null;

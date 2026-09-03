@@ -27,7 +27,6 @@ it('lets published values override the mergeConfigFrom package defaults', functi
 
 return [
     'sanitizers' => [],
-    'protected_columns' => ['created_at', 'updated_at', 'deleted_at'],
     'models' => [],
     'environments' => ['local', 'testing', 'staging'],
     'chunk' => [

@@ -60,16 +60,34 @@ class ChunkSizer
         return $this->wasAutomatic;
     }
 
-    /** Memoized COUNT(*) per table, so at most one is issued per table per run. */
+    /**
+     * Clears the memoized per-table row count. Being a singleton, ChunkSizer
+     * otherwise carries a stale count across two runs in the same process
+     * (a long-running worker, a test suite) if row counts changed between
+     * them — this must be called once per pii:sanitize invocation, mirroring
+     * ReplacementGenerator::reset().
+     */
+    public function reset(): void
+    {
+        $this->counts = [];
+    }
+
+    /**
+     * Memoized COUNT(*) per (connection, table), so at most one is issued
+     * per table per run — keyed by connection too, since two models on
+     * different connections can share a table name and would otherwise
+     * silently inherit each other's row count.
+     */
     public function countFor(Model $model): int
     {
         $table = $model->getTable();
+        $key = ($model->getConnectionName() ?? '').'.'.$table;
 
-        if (! array_key_exists($table, $this->counts)) {
-            $this->counts[$table] = (int) $model->newQuery()->toBase()->count();
+        if (! array_key_exists($key, $this->counts)) {
+            $this->counts[$key] = (int) $model->newQuery()->toBase()->count();
         }
 
-        return $this->counts[$table];
+        return $this->counts[$key];
     }
 
     /**

@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Artisan;
+use Shahirul22\LaravelPiiSanitizer\Commands\SanitizeCommand;
 
 it('documents every option in --help output', function () {
     Artisan::call('help', ['command_name' => 'pii:sanitize']);
@@ -22,4 +23,16 @@ it('documents every option in --help output', function () {
     expect($output)->toContain('Sanitize PII columns in the database.');
 
     expect($output)->not->toContain('scaffold');
+});
+
+it('exposes no --connection option (AC-12/R5.6: single default connection only)', function () {
+    Artisan::call('help', ['command_name' => 'pii:sanitize']);
+
+    $output = Artisan::output();
+
+    expect($output)->not->toContain('--connection');
+
+    $signature = (new SanitizeCommand)->getDefinition();
+
+    expect($signature->hasOption('connection'))->toBeFalse();
 });

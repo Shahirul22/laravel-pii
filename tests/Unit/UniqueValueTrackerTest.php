@@ -86,6 +86,54 @@ namespace {
         expect($tracker->isTaken('uvt_rows', ['email'], ['replacement@example.com']))->toBeTrue();
     });
 
+    it('seeds from the given connection, not the default connection', function () {
+        config()->set('database.connections.uvt_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        Schema::connection('uvt_secondary')->create('uvt_rows', function ($table) {
+            $table->id();
+            $table->string('email')->nullable();
+        });
+
+        DB::connection('uvt_secondary')->table('uvt_rows')->insert([
+            ['email' => 'only-on-secondary@example.com'],
+        ]);
+
+        $tracker = new UniqueValueTracker(app('db'));
+
+        $tracker->seed('uvt_rows', ['email'], 'uvt_secondary');
+
+        // Checked against the DEFAULT connection's namespace (no $connection
+        // arg to isTaken) so a pre-fix implementation — where seed()'s query
+        // already correctly targeted uvt_secondary (that part predates this
+        // fix) but namespaceKey() didn't include $connection — would still
+        // wrongly report this as taken under the default namespace too.
+        // Only correct per-connection namespacing keeps them apart.
+        expect($tracker->isTaken('uvt_rows', ['email'], ['only-on-secondary@example.com']))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['only-on-secondary@example.com'], 'uvt_secondary'))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['existing@example.com'], 'uvt_secondary'))->toBeFalse();
+    });
+
+    it('keeps the taken-set namespaced by connection, so the same table/column pair on two connections never collides', function () {
+        config()->set('database.connections.uvt_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        $tracker = new UniqueValueTracker(app('db'));
+
+        $tracker->claim('uvt_rows', ['email'], ['shared@example.com']);
+
+        // Claimed on the default connection only — must not be seen as
+        // taken under the same table/column pair on a different connection.
+        expect($tracker->isTaken('uvt_rows', ['email'], ['shared@example.com'], 'uvt_secondary'))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['shared@example.com']))->toBeTrue();
+    });
+
     it('reset() clears everything including the seeded flag, so a later seed() re-queries', function () {
         $tracker = new UniqueValueTracker(app('db'));
 

@@ -5,6 +5,7 @@ namespace Shahirul22\LaravelPiiSanitizer;
 use Faker\Generator;
 use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
 
 /**
@@ -32,11 +33,13 @@ class ReplacementGenerator
      *
      * @throws UniquenessExhaustedException
      * @throws InvalidCategoricalColumnException
+     * @throws InvalidReplacementValueException
      */
     public function forRow(Sanitizer $sanitizer, Model $row, Generator $faker): array
     {
         $table = $row->getTable();
         $modelClass = $row::class;
+        $connection = $row->getConnectionName();
         $fields = $sanitizer->fields();
         $declared = array_keys($fields);
         $categorical = $sanitizer->categorical();
@@ -44,17 +47,17 @@ class ReplacementGenerator
         $values = [];
 
         foreach ($declared as $column) {
-            $values[$column] = $this->generateValue($column, $fields, $row, $faker, $categorical, $table, $modelClass);
+            $values[$column] = $this->generateValue($column, $fields, $row, $faker, $categorical, $table, $modelClass, $connection);
         }
 
-        $constraints = $this->inspector->constraintsAffecting($table, $declared);
+        $constraints = $this->inspector->constraintsAffecting($table, $declared, $connection);
 
         if ($constraints === []) {
             return $values;
         }
 
         foreach ($constraints as $constraint) {
-            $this->tracker->seed($table, $constraint);
+            $this->tracker->seed($table, $constraint, $connection);
         }
 
         $lastViolated = $constraints[0];
@@ -65,7 +68,7 @@ class ReplacementGenerator
             foreach ($constraints as $constraint) {
                 $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
-                if ($this->tracker->isTaken($table, $constraint, $tuple)) {
+                if ($this->tracker->isTaken($table, $constraint, $tuple, $connection)) {
                     $violated[] = $constraint;
                 }
             }
@@ -74,7 +77,7 @@ class ReplacementGenerator
                 foreach ($constraints as $constraint) {
                     $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
-                    $this->tracker->claim($table, $constraint, $tuple);
+                    $this->tracker->claim($table, $constraint, $tuple, $connection);
                 }
 
                 return $values;
@@ -87,7 +90,7 @@ class ReplacementGenerator
             )));
 
             foreach ($columnsToRegenerate as $column) {
-                $values[$column] = $this->generateValue($column, $fields, $row, $faker, $categorical, $table, $modelClass);
+                $values[$column] = $this->generateValue($column, $fields, $row, $faker, $categorical, $table, $modelClass, $connection);
             }
         }
 
@@ -115,17 +118,37 @@ class ReplacementGenerator
      *
      * @throws InvalidCategoricalColumnException
      */
-    private function generateValue(string $column, array $fields, Model $row, Generator $faker, array $categorical, string $table, string $modelClass): mixed
+    private function generateValue(string $column, array $fields, Model $row, Generator $faker, array $categorical, string $table, string $modelClass, ?string $connection = null): mixed
     {
         if (in_array($column, $categorical, true)) {
-            $profile = $this->sampler->profile($table, $column, $modelClass);
+            $profile = $this->sampler->profile($table, $column, $modelClass, $connection);
 
             if ($profile !== []) {
-                return $this->sampler->sample($table, $column, $faker, $modelClass);
+                return $this->sampler->sample($table, $column, $faker, $modelClass, $connection);
             }
         }
 
-        return $this->resolver->resolve($fields[$column], $row->getAttribute($column), $faker, $row);
+        $value = $this->resolver->resolve($fields[$column], $row->getAttribute($column), $faker, $row);
+
+        if (! $this->isWritableValue($value)) {
+            throw InvalidReplacementValueException::unsupportedType($column, get_debug_type($value));
+        }
+
+        return $value;
+    }
+
+    /**
+     * Whether a resolved value is safe to hand to a raw UPDATE: a scalar,
+     * null, an array (for JSON/array-cast columns), or a BackedEnum/UnitEnum
+     * — not an arbitrary object such as DateTime, which the query builder
+     * would otherwise pass through unchecked into the database driver.
+     */
+    private function isWritableValue(mixed $value): bool
+    {
+        return $value === null
+            || is_scalar($value)
+            || is_array($value)
+            || $value instanceof \UnitEnum;
     }
 
     /**

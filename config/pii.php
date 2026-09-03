@@ -21,18 +21,6 @@ return [
 
     /*
     |--------------------------------------------------------------------
-    | Protected columns
-    |--------------------------------------------------------------------
-    |
-    | Additional audit/temporal columns never written unless explicitly
-    | declared in a Sanitizer's fields(). Merged with each model's own
-    | created_at/updated_at/deleted_at columns.
-    |
-    */
-    'protected_columns' => ['created_at', 'updated_at', 'deleted_at'],
-
-    /*
-    |--------------------------------------------------------------------
     | Models
     |--------------------------------------------------------------------
     |

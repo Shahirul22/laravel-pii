@@ -11,6 +11,17 @@ namespace {
 
         public $timestamps = false;
     }
+
+    class ChunkSizerSecondaryUser extends Model
+    {
+        protected $connection = 'chunk_sizer_secondary';
+
+        protected $table = 'chunk_sizer_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
 }
 
 namespace {
@@ -116,6 +127,71 @@ namespace {
 
         expect($sizer->sizeFor(new ChunkSizerUser, new RunOptions))->toBe(300);
         expect($sizer->wasAutomatic())->toBeTrue();
+    });
+
+    it('falls back to DEFAULT_TARGET_CHUNKS/DEFAULT_MAX when target_chunks/max are non-numeric, above the min threshold', function () {
+        // Row count (3000) is deliberately well above ChunkSizer::DEFAULT_MIN
+        // (500) so the early-return "count <= min" branch never fires and
+        // sizeFor() actually reaches the target_chunks/max intConfig() reads
+        // below it — the two existing "partial config" tests both use row
+        // counts at or under the min and so never exercise this fallback.
+        seedChunkSizerUsers(3000);
+
+        config()->set('pii.chunk', ['size' => null, 'min' => 100]);
+
+        $sizer = new ChunkSizer;
+
+        $expected = max(100, min(ChunkSizer::DEFAULT_MAX, (int) ceil(3000 / ChunkSizer::DEFAULT_TARGET_CHUNKS)));
+
+        expect($sizer->sizeFor(new ChunkSizerUser, new RunOptions))->toBe($expected);
+        expect($sizer->wasAutomatic())->toBeTrue();
+    });
+
+    it('counts each connection\'s same-named table separately, not sharing a cached row count', function () {
+        config()->set('database.connections.chunk_sizer_secondary', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
+
+        Schema::connection('chunk_sizer_secondary')->create('chunk_sizer_users', function ($table) {
+            $table->id();
+            $table->string('email')->nullable();
+        });
+
+        seedChunkSizerUsers(50);
+
+        for ($i = 0; $i < 400; $i++) {
+            DB::connection('chunk_sizer_secondary')->table('chunk_sizer_users')->insert(['email' => "secondary-{$i}@example.com"]);
+        }
+
+        $sizer = new ChunkSizer;
+
+        // Count the default connection's table first, so a pre-fix
+        // (table-name-only cache key) implementation would serve this
+        // cached 50 back for the secondary connection's identically-named
+        // table below instead of re-counting.
+        expect($sizer->countFor(new ChunkSizerUser))->toBe(50);
+        expect($sizer->countFor(new ChunkSizerSecondaryUser))->toBe(400);
+    });
+
+    it('re-counts after reset() instead of returning a stale cached count', function () {
+        seedChunkSizerUsers(50);
+
+        $sizer = new ChunkSizer;
+
+        expect($sizer->sizeFor(new ChunkSizerUser, new RunOptions))->toBe(50);
+
+        seedChunkSizerUsers(50); // now 100 rows total
+
+        // Without reset(), sizeFor() would still return the memoized 50 —
+        // this is the staleness a singleton-bound ChunkSizer must not carry
+        // across two runs in the same process.
+        expect($sizer->sizeFor(new ChunkSizerUser, new RunOptions))->toBe(50);
+
+        $sizer->reset();
+
+        expect($sizer->sizeFor(new ChunkSizerUser, new RunOptions))->toBe(100);
     });
 
     it('issues exactly one COUNT query per table per run', function () {

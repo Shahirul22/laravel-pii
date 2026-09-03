@@ -70,6 +70,25 @@ namespace {
             ];
         }
     }
+
+    class TxExhaustedUser extends Model
+    {
+        protected $table = 'tx_exhausted_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class TxExhaustedUserSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return [
+                'email' => fn () => 'always-the-same@example.com',
+            ];
+        }
+    }
 }
 
 namespace {
@@ -77,6 +96,7 @@ namespace {
     use Illuminate\Support\Facades\DB;
     use Illuminate\Support\Facades\Schema;
     use Shahirul22\LaravelPiiSanitizer\ChunkStatus;
+    use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
     use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
     use Shahirul22\LaravelPiiSanitizer\RunOptions;
     use Shahirul22\LaravelPiiSanitizer\SanitizationRunner;
@@ -219,5 +239,31 @@ namespace {
 
         expect(fn () => app(SanitizationRunner::class)->run(new RunOptions))
             ->toThrow(UnsafeColumnException::class);
+    });
+
+    it('surfaces a package-defined exception message verbatim instead of the generic redacted message', function () {
+        Schema::create('tx_exhausted_users', function ($table) {
+            $table->id();
+            $table->string('email')->unique();
+        });
+
+        DB::table('tx_exhausted_users')->insert(['email' => 'existing@example.com']);
+        DB::table('tx_exhausted_users')->insert(['email' => 'other@example.com']);
+
+        config()->set('pii.sanitizers', [
+            TxExhaustedUser::class => TxExhaustedUserSanitizer::class,
+        ]);
+        config()->set('pii.models', [TxExhaustedUser::class]);
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10));
+
+        $model = $report->models[0];
+        $failedChunk = $model->chunks[0];
+
+        expect($failedChunk->status)->toBe(ChunkStatus::RolledBack);
+        expect($failedChunk->failureClass)->toBe(UniquenessExhaustedException::class);
+        expect($failedChunk->failureMessage)->toContain('email');
+        expect($failedChunk->failureMessage)->toContain(TxExhaustedUserSanitizer::class);
+        expect($failedChunk->failureMessage)->not->toContain('database exception during chunk write');
     });
 }

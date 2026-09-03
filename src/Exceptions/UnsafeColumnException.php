@@ -33,4 +33,14 @@ final class UnsafeColumnException extends \RuntimeException
             "[laravel-pii-sanitizer] {$modelClass}::\${$column} does not exist on table \"{$table}\". Check the column name in {$sanitizerClass}::fields()."
         );
     }
+
+    /**
+     * @param  class-string  $modelClass
+     */
+    public static function primaryKey(string $modelClass, string $column, string $sanitizerClass, string $table): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] {$modelClass}::\${$column} is the primary key of table \"{$table}\" and cannot be sanitized — chunkById() pages and orders by it. Remove it from {$sanitizerClass}::fields()."
+        );
+    }
 }

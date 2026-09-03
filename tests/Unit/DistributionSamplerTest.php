@@ -90,6 +90,41 @@ it('distinguishes null, integer 1 and string "1" as separate categories', functi
     expect($profile)->toHaveCount(2);
 });
 
+it('keeps distinct invalid-UTF-8 values as separate categories instead of colliding into one bucket', function () {
+    Schema::create('sampler_rows', function ($table) {
+        $table->id();
+        $table->binary('status')->nullable();
+    });
+
+    // json_encode() returns false for a string containing a malformed
+    // UTF-8 byte sequence; without a guard, both would collapse into the
+    // same '' array key, corrupting the profile. Two distinct invalid
+    // sequences here must remain two distinct categories.
+    $badA = "status-a-\xFF-end";
+    $badB = "status-b-\xFE-end";
+
+    for ($i = 0; $i < 7; $i++) {
+        DB::table('sampler_rows')->insert(['status' => $badA]);
+    }
+    for ($i = 0; $i < 3; $i++) {
+        DB::table('sampler_rows')->insert(['status' => $badB]);
+    }
+
+    $profile = dsSampler()->profile('sampler_rows', 'status');
+
+    expect($profile)->toHaveCount(2);
+
+    $counts = [];
+    foreach ($profile as $entry) {
+        $counts[$entry['value']] = $entry['count'];
+    }
+
+    expect($counts)->toEqualCanonicalizing([
+        $badA => 7,
+        $badB => 3,
+    ]);
+});
+
 it('caches the profile for the whole run so repeated sampling issues one aggregate query', function () {
     Schema::create('sampler_rows', function ($table) {
         $table->id();
@@ -119,6 +154,46 @@ it('caches the profile for the whole run so repeated sampling issues one aggrega
     $profileAfter = $sampler->profile('sampler_rows', 'status');
 
     expect($profileAfter)->toHaveCount(1);
+});
+
+it('profiles the given connection separately, not sharing a cache entry with the default connection', function () {
+    config()->set('database.connections.ds_secondary', [
+        'driver' => 'sqlite',
+        'database' => ':memory:',
+        'prefix' => '',
+    ]);
+
+    Schema::create('sampler_rows', function ($table) {
+        $table->id();
+        $table->string('status')->nullable();
+    });
+
+    for ($i = 0; $i < 10; $i++) {
+        DB::table('sampler_rows')->insert(['status' => 'default-only']);
+    }
+
+    Schema::connection('ds_secondary')->create('sampler_rows', function ($table) {
+        $table->id();
+        $table->string('status')->nullable();
+    });
+
+    for ($i = 0; $i < 5; $i++) {
+        DB::connection('ds_secondary')->table('sampler_rows')->insert(['status' => 'secondary-only']);
+    }
+
+    $sampler = dsSampler();
+
+    // Profile the default connection first, so a pre-fix (table+column-only
+    // cache key) implementation would serve this cached entry back for the
+    // secondary connection's profile() call below instead of re-querying.
+    $defaultProfile = $sampler->profile('sampler_rows', 'status');
+    $secondaryProfile = $sampler->profile('sampler_rows', 'status', connection: 'ds_secondary');
+
+    $defaultValues = array_column($defaultProfile, 'value');
+    $secondaryValues = array_column($secondaryProfile, 'value');
+
+    expect($defaultValues)->toBe(['default-only']);
+    expect($secondaryValues)->toBe(['secondary-only']);
 });
 
 it('clears cached profiles on reset()', function () {

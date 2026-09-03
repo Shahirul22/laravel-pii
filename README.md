@@ -28,7 +28,11 @@ Reports the number of rows that would be sanitized per model, plus a per-column 
 
 ### Unsafe columns are rejected before a single row is read
 
-Foreign-key columns, and columns referenced by another table's foreign key, are rejected at sanitizer-resolution time, before the engine reads any row, rather than being rewritten. Rewriting a referenced key would break relational integrity, so the package refuses instead.
+Foreign-key columns, columns referenced by another table's foreign key, and a table's own primary key are rejected at sanitizer-resolution time, before the engine reads any row, rather than being rewritten. Rewriting a referenced key or the primary key itself would break relational integrity (or the chunked read that pages by it), so the package refuses instead.
+
+### Timestamp columns are never touched unless you declare them
+
+The engine only ever writes the columns you declare in `fields()`. A model's `created_at`/`updated_at` (and `deleted_at` under `SoftDeletes`) are left exactly as they were unless you explicitly add them to `fields()` yourself — there is no separate opt-out needed.
 
 ## Requirements
 
@@ -65,7 +69,6 @@ This writes `config/pii.php`. Publishing is optional in principle, since the pac
 |---|---|---|
 | `models` | `[]` | The explicit, ordered list of model classes the engine walks. There is no filesystem auto-discovery, so an empty list yields an empty run report rather than an error. |
 | `sanitizers` | `[]` | Explicit `model-FQCN => sanitizer-FQCN` overrides. An entry here always beats the `App\Sanitizers\{Model}Sanitizer` convention. |
-| `protected_columns` | `['created_at', 'updated_at', 'deleted_at']` | Audit and temporal columns never written unless you explicitly declare them in a `fields()` map. Merged with each model's own timestamp columns. |
 | `environments` | `['local', 'testing']` | The environment guard's allow-list. |
 | `chunk` | `['size' => env('PII_CHUNK_SIZE'), 'min' => 500, 'max' => 5000, 'target_chunks' => 20]` | `size` is `null` by default, meaning chunks are sized automatically. `min`, `max`, and `target_chunks` tune the automatic algorithm. |
 
@@ -159,6 +162,8 @@ php artisan pii:sanitize
 | `--chunk=` | Rows per chunk; overrides config `pii.chunk.size` and automatic sizing. Must be a positive integer. |
 | `--model=*` | Fully-qualified model class to sanitize; repeatable, defaults to config `pii.models` |
 
+`pii.models` is the *default* target list used when `--model` is omitted, not an allow-list `--model` is restricted to. Passing `--model` is an intentional override: it can target any model, including one deliberately left out of `pii.models` — useful for a one-off run against a single model before adding it to config. It is still fully subject to the same schema-safety checks (FK/FK-referenced/primary-key column rejection) as a `pii.models`-driven run.
+
 Exit code `0` on a successful run or a completed dry run; `1` on an environment-guard refusal, an invalid `--chunk` value, or a failed run.
 
 ### Dry-run output
@@ -232,6 +237,10 @@ A Faker method name, the form the example above uses:
 'email' => 'safeEmail',
 ```
 
+### Preserving a column's uniqueness
+
+Any column carrying a unique (or composite-unique) database constraint automatically has its generated replacement values checked against both the existing values already in that column and every value generated earlier in the same run — no opt-in declaration needed. If a value definition's space is too small to keep producing unique values, the run stops with a `UniquenessExhaustedException` naming the column and sanitizer, rather than silently writing a duplicate or looping forever. Widen the value definition (e.g. `$faker->unique()->safeEmail()`, or append the row's primary key) if you hit this.
+
 ### Preserving a column's value distribution
 
 Override `categorical()` to list columns whose replacement values should preserve the column's original distribution. Every column named there must also appear in `fields()`:
@@ -243,9 +252,11 @@ public function categorical(): array
 }
 ```
 
+Declaring a column `categorical()` changes *how* its `fields()` value is generated, not whether one is required: the engine draws a replacement by resampling from the column's own real (pre-sanitization) value distribution instead of invoking the declared static value/closure/generator/Faker call. This is the intended v1 semantic for approximating a categorical column's original distribution (a finite, repeated value set), not a bypass of `fields()` — but it does mean a categorical column's `fields()` definition governs only its shape (it must still be declared), not the actual replacement value written. Do not declare a column `categorical()` if you need its literal `fields()` value to always be the one written.
+
 ## Known limitations
 
-- **Flat columns only.** Foreign-key columns, and columns referenced by another table's foreign key, are rejected at sanitizer-resolution time, before any row is read. Rewriting a referenced key risks breaking relational integrity, so the package refuses rather than guessing.
+- **Flat columns only.** Foreign-key columns, columns referenced by another table's foreign key, and a table's own primary key are rejected at sanitizer-resolution time, before any row is read. Rewriting a referenced key or the primary key risks breaking relational integrity (or the chunked read itself), so the package refuses rather than guessing.
 - **Single default connection.** The engine operates on your default database connection only.
 - **No model auto-discovery.** `pii.models` is an explicit, ordered list; nothing is discovered by scanning the filesystem.
 - **Development-time only.** There is no production story, by design.

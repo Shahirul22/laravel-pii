@@ -105,14 +105,27 @@ class UniqueValueTracker
      * only costs a retry for a value that differs from another in case alone.
      * Collations that also fold accents or trailing spaces are not covered.
      *
+     * A member json_encode() cannot encode (a string that is not valid
+     * UTF-8) gets a binary-safe key instead: a NUL marker, which no JSON
+     * encoding contains, then the bytes in hex. Without it every such
+     * member would encode to the same empty key and falsely collide.
+     *
      * @param  list<mixed>  $values
      */
     private function tupleKey(array $values): string
     {
         return implode("\x1f", array_map(
-            static fn (mixed $value): string => (string) json_encode(
-                is_string($value) && mb_check_encoding($value, 'UTF-8') ? mb_strtolower($value, 'UTF-8') : $value
-            ),
+            static function (mixed $value): string {
+                $encoded = json_encode(
+                    is_string($value) && mb_check_encoding($value, 'UTF-8') ? mb_strtolower($value, 'UTF-8') : $value
+                );
+
+                if ($encoded !== false) {
+                    return $encoded;
+                }
+
+                return "\x00".(is_string($value) ? 'bin:'.bin2hex($value) : 'php:'.bin2hex(serialize($value)));
+            },
             $values
         ));
     }

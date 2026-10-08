@@ -191,14 +191,14 @@ final class ReferencedColumnGuard
      */
     private function assertForeignKeyClosure(array $members, array $targets, array $declared, array &$suspend): void
     {
-        /** @var array<string, true> $canonicalMembers */
+        /** @var array<string, true> $canonicalMembers members keyed "{table key}.{column}" */
         $canonicalMembers = [];
 
         foreach ($members as $node) {
             $model = $targets[$declared[$node][0]]['model'];
             $connection = $this->db->connection($model->getConnectionName());
 
-            $canonicalMembers[$this->foreignKeys->canonicalTableName($connection, $model->getTable()).'.'.$this->columnOf($node)] = true;
+            $canonicalMembers[$this->foreignKeys->tableKey($connection, $model->getTable()).'.'.$this->columnOf($node)] = true;
         }
 
         foreach ($members as $node) {
@@ -213,21 +213,26 @@ final class ReferencedColumnGuard
             }
 
             $connection = $this->db->connection($model->getConnectionName());
-            $canonicalTable = $this->foreignKeys->canonicalTableName($connection, $table);
+            $tableKey = $this->foreignKeys->tableKey($connection, $table);
 
             foreach ($this->foreignKeys->edgesTouching($connection, $table, $column) as $edge) {
                 $suspend[$connection->getName()] = $connection;
+
+                // Columns pair by position; a pair the metadata leaves unmatched cannot be checked.
+                if (count($edge['child_columns']) !== count($edge['parent_columns'])) {
+                    throw UnsafeColumnException::malformedForeignKey($edge['child_table'], $edge['child_columns'], $edge['parent_table'], $edge['parent_columns']);
+                }
 
                 foreach ($edge['child_columns'] as $position => $childColumn) {
                     $parentColumn = $edge['parent_columns'][$position];
 
                     // A same-table edge can match on both sides; check both.
-                    if ($edge['child_table'] === $canonicalTable && $childColumn === $column) {
-                        $this->assertEndpoint($edge['parent_table'], $parentColumn, $canonicalMembers, $model, $column, $sanitizer, $table, $edge['child_table'], $childColumn, $edge['parent_table'], $parentColumn);
+                    if ($edge['child_key'] === $tableKey && $childColumn === $column) {
+                        $this->assertEndpoint($edge['parent_key'], $parentColumn, $canonicalMembers, $model, $column, $sanitizer, $table, $edge['child_table'], $childColumn, $edge['parent_table'], $parentColumn);
                     }
 
-                    if ($edge['parent_table'] === $canonicalTable && $parentColumn === $column) {
-                        $this->assertEndpoint($edge['child_table'], $childColumn, $canonicalMembers, $model, $column, $sanitizer, $table, $edge['child_table'], $childColumn, $edge['parent_table'], $parentColumn);
+                    if ($edge['parent_key'] === $tableKey && $parentColumn === $column) {
+                        $this->assertEndpoint($edge['child_key'], $childColumn, $canonicalMembers, $model, $column, $sanitizer, $table, $edge['child_table'], $childColumn, $edge['parent_table'], $parentColumn);
                     }
                 }
             }
@@ -235,7 +240,8 @@ final class ReferencedColumnGuard
     }
 
     /**
-     * @param  array<string, true>  $canonicalMembers
+     * @param  string  $otherTable  the other endpoint's table key (ForeignKeyInspector::tableKey())
+     * @param  array<string, true>  $canonicalMembers  members keyed "{table key}.{column}"
      */
     private function assertEndpoint(string $otherTable, string $otherColumn, array $canonicalMembers, Model $model, string $column, Sanitizer $sanitizer, string $table, string $childTable, string $childColumn, string $parentTable, string $parentColumn): void
     {

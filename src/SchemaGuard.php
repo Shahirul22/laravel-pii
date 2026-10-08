@@ -209,6 +209,11 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         foreach ($mirrors as $column => $list) {
+            // An integer key that is not a declared column means mirrors() was written as a list.
+            if (is_int($column) && ! array_key_exists($column, $fields)) {
+                throw InvalidConfigurationException::mirrorEntryWithoutColumn($sanitizer::class, $column);
+            }
+
             if (! array_key_exists($column, $fields)) {
                 throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the column is not declared in fields()');
             }

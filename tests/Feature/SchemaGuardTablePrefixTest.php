@@ -31,6 +31,14 @@ namespace {
         public $timestamps = false;
     }
 
+    class PrefixedUserNameSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['name' => 'name'];
+        }
+    }
+
     class PrefixedInboundRefSanitizer extends Sanitizer
     {
         public function fields(): array
@@ -98,5 +106,12 @@ namespace {
             expect($exception->getMessage())->toContain('id');
             expect($exception->getMessage())->toContain('prefixed_orders');
         }
+    });
+
+    it('rejects a column referenced from a table that lacks the connection prefix (BUG-25)', function () {
+        DB::statement('create table "legacy_audit" ("id" integer primary key, "user_name" varchar references "wp_prefixed_users" ("name"))');
+
+        expect(fn () => app(SchemaGuard::class)->assertSafe(new PrefixedUserNameSanitizer, PrefixedUser::class))
+            ->toThrow(UnsafeColumnException::class, 'PrefixedUser::$name is referenced by a foreign key on table "legacy_audit"');
     });
 }

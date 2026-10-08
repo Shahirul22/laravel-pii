@@ -18,10 +18,19 @@ final class InvalidConfigurationException extends \RuntimeException
         );
     }
 
-    public static function invalidSanitizerClass(string $value): self
+    /**
+     * @param  string|null  $configKey  the config key the class came from (pii.sanitizers or pii.tables), or null for a class found by the App\Sanitizers naming convention
+     */
+    public static function invalidSanitizerClass(string $value, ?string $configKey): self
     {
+        if ($configKey === null) {
+            return new self(
+                "[laravel-pii-sanitizer] \"{$value}\", found by the App\\Sanitizers\\{Model}Sanitizer naming convention, is not a valid Sanitizer class. Check the class extends Shahirul22\\LaravelPiiSanitizer\\Sanitizer."
+            );
+        }
+
         return new self(
-            "[laravel-pii-sanitizer] \"{$value}\" in pii.sanitizers is not a valid Sanitizer class. Check the class exists and extends Shahirul22\\LaravelPiiSanitizer\\Sanitizer."
+            "[laravel-pii-sanitizer] \"{$value}\" in {$configKey} is not a valid Sanitizer class. Check the class exists and extends Shahirul22\\LaravelPiiSanitizer\\Sanitizer."
         );
     }
 
@@ -57,6 +66,17 @@ final class InvalidConfigurationException extends \RuntimeException
     {
         return new self(
             "[laravel-pii-sanitizer] {$sanitizerClass}::mirrors() entry for \${$column} is invalid: {$reason}."
+        );
+    }
+
+    /**
+     * A mirrors() entry with an integer key, i.e. mirrors() declared as a
+     * list instead of a map of column => list.
+     */
+    public static function mirrorEntryWithoutColumn(string $sanitizerClass, int $key): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] {$sanitizerClass}::mirrors() entry {$key} is invalid: it has no column name. mirrors() must be a map of column => list of \"table.column\" strings, for example ['nric' => ['orders.customer_nric']]."
         );
     }
 

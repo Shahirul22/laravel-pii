@@ -46,14 +46,14 @@ class SanitizerResolver implements SanitizerResolverContract
             $sanitizerClass = $overrides[$class];
 
             if (is_string($sanitizerClass) && $sanitizerClass !== '') {
-                return $this->make($sanitizerClass, $model);
+                return $this->make($sanitizerClass, $model, 'pii.sanitizers');
             }
         }
 
         $conventional = 'App\\Sanitizers\\'.class_basename($class).'Sanitizer';
 
         if (class_exists($conventional)) {
-            return $this->make($conventional, $model);
+            return $this->make($conventional, $model, null);
         }
 
         return null;
@@ -72,7 +72,7 @@ class SanitizerResolver implements SanitizerResolverContract
         $map = config('pii.tables', []);
 
         if (is_array($map) && array_key_exists($table, $map) && is_string($map[$table]) && $map[$table] !== '') {
-            return $this->make($map[$table], TableRow::forTable($table));
+            return $this->make($map[$table], TableRow::forTable($table), 'pii.tables');
         }
 
         return null;
@@ -80,19 +80,20 @@ class SanitizerResolver implements SanitizerResolverContract
 
     /**
      * @param  class-string  $sanitizerClass
+     * @param  string|null  $configKey  where the class came from, named in the error: pii.sanitizers, pii.tables, or null for the naming convention
      */
-    private function make(string $sanitizerClass, Model|string $model): Sanitizer
+    private function make(string $sanitizerClass, Model|string $model, ?string $configKey): Sanitizer
     {
         // A missing class would otherwise surface as the container's raw
         // BindingResolutionException.
         if (! class_exists($sanitizerClass) && ! app()->bound($sanitizerClass)) {
-            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass);
+            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass, $configKey);
         }
 
         $instance = app($sanitizerClass);
 
         if (! $instance instanceof Sanitizer) {
-            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass);
+            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass, $configKey);
         }
 
         $this->guard->assertSafe($instance, $model);

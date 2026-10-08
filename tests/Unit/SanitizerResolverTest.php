@@ -76,6 +76,11 @@ namespace App\Models {
     {
         protected $table = 'resolver_convention_users';
     }
+
+    class ResolverMisfitUser extends Model
+    {
+        protected $table = 'resolver_misfit_users';
+    }
 }
 
 namespace App\Sanitizers {
@@ -88,12 +93,19 @@ namespace App\Sanitizers {
             return [];
         }
     }
+
+    class ResolverMisfitUserSanitizer
+    {
+        //
+    }
 }
 
 namespace {
 
     use App\Models\ResolverConventionUser;
+    use App\Models\ResolverMisfitUser;
     use App\Sanitizers\ResolverConventionUserSanitizer;
+    use App\Sanitizers\ResolverMisfitUserSanitizer;
     use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
     use Shahirul22\LaravelPiiSanitizer\SanitizerResolver;
 
@@ -238,8 +250,36 @@ namespace {
         $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
 
         expect(fn () => $resolver->resolve(ResolverFakeUser::class))
-            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo)->getMessage());
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo, 'pii.sanitizers')->getMessage());
         expect(fn () => $resolver->resolveTable('resolver_rows'))
-            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo)->getMessage());
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo, 'pii.tables')->getMessage());
+    });
+
+    it('names the config key the invalid sanitizer class came from', function () {
+        config()->set('pii.sanitizers', [ResolverFakeUser::class => ResolverNotASanitizer::class]);
+        config()->set('pii.tables', ['resolver_rows' => ResolverNotASanitizer::class]);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        expect(fn () => $resolver->resolve(ResolverFakeUser::class))
+            ->toThrow(InvalidConfigurationException::class, '"'.ResolverNotASanitizer::class.'" in pii.sanitizers is not a valid Sanitizer class.');
+        expect(fn () => $resolver->resolveTable('resolver_rows'))
+            ->toThrow(InvalidConfigurationException::class, '"'.ResolverNotASanitizer::class.'" in pii.tables is not a valid Sanitizer class.');
+    });
+
+    it('does not blame pii.sanitizers for a conventional class that is not a Sanitizer', function () {
+        config()->set('pii.sanitizers', []);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        try {
+            $resolver->resolve(ResolverMisfitUser::class);
+
+            $this->fail('Expected InvalidConfigurationException to be thrown.');
+        } catch (InvalidConfigurationException $exception) {
+            expect($exception->getMessage())->toBe(InvalidConfigurationException::invalidSanitizerClass(ResolverMisfitUserSanitizer::class, null)->getMessage());
+            expect($exception->getMessage())->toContain('naming convention');
+            expect($exception->getMessage())->not->toContain('pii.sanitizers');
+        }
     });
 }

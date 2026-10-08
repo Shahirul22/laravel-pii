@@ -165,4 +165,20 @@ namespace {
         expect($tracker->isTaken('uvt_rows', ['a', 'b'], ['TENANT', 'slug']))->toBeTrue();
         expect($tracker->isTaken('uvt_rows', ['a', 'b'], ['tenant', 'other']))->toBeFalse();
     });
+
+    it('keeps distinct invalid-UTF-8 members distinct instead of folding them into one key', function () {
+        $tracker = new UniqueValueTracker(app('db'));
+
+        $tracker->claim('uvt_rows', ['email'], ["\xff"]);
+        $tracker->claim('uvt_rows', ['a', 'b'], ["\xfe\xff", 'x']);
+
+        expect($tracker->isTaken('uvt_rows', ['email'], ["\xff"]))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['email'], ["\xfe"]))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['email'], ["\xc3\x28"]))->toBeFalse();
+        // No invalid member may collide with the key of a valid string either.
+        expect($tracker->isTaken('uvt_rows', ['email'], ['']))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['ff']))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['a', 'b'], ["\xfe\xff", 'x']))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['a', 'b'], ["\xfe\xfe", 'x']))->toBeFalse();
+    });
 }

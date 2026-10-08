@@ -38,6 +38,12 @@ By default, the package rejects three kinds of column at sanitizer-resolution ti
 - A column that a foreign key references, whether the key is on another table or on the same table.
 - A primary-key column. For a composite primary key, this means every column of the key.
 
+To find foreign keys, the package reads every table that the database lists on the connection. That includes a table in another schema, such as `hr.employees` on PostgreSQL, which is told apart from a table of the same name in the default schema, and a table whose name does not carry the connection's table prefix. On SQLite, a foreign key declared without its referenced columns, such as `customer_nric TEXT REFERENCES customers`, points at the primary key of the referenced table, and the package reads it that way. If that table has no primary key with the right number of columns, the run stops at boot with this message (the names are examples):
+
+```text
+[laravel-pii-sanitizer] The foreign key on table "orders" (column customer_nric) references table "customers" without naming the referenced columns, and they cannot be resolved to the primary key of "customers". Name the referenced columns in the foreign key so the package can check which columns it links.
+```
+
 Rewriting such a column on its own would break relational integrity, or the chunked read that pages by it, so the package refuses instead. The rejection of a foreign-key column or a referenced column ends with this hint:
 
 ```text
@@ -51,6 +57,10 @@ Opting in also switches foreign-key enforcement off for the run, and on PostgreS
 ### Timestamp columns are never touched unless you declare them
 
 The engine only ever writes the columns you declare in `fields()`. A model's `created_at`/`updated_at` (and `deleted_at` under `SoftDeletes`) are left exactly as they were unless you explicitly add them to `fields()` yourself — there is no separate opt-out needed.
+
+### Rows hidden by a global scope are sanitized too
+
+The package reads every target without its global scopes. A soft-deleted row, or a row that any other global scope hides, still holds PII, so it is read, counted in the chunk sizing and the report, and sanitized like every other row. Its `deleted_at` is not changed.
 
 ## What this package does not do
 
@@ -170,6 +180,20 @@ Resolution order:
 2. The conventional `App\Sanitizers\{Model}Sanitizer` class, if it exists.
 3. Otherwise the model is skipped and reported as `skipped — no sanitizer`.
 
+A class name that is wrong stops the run at boot with the package's own message, before any row is read. A model class in `pii.models` or `--model` that does not exist or is not an Eloquent model gives the first message below. A sanitizer class that does not exist or does not extend `Sanitizer` gives the second, which names the config key it came from, `pii.sanitizers` or `pii.tables`. A conventional `App\Sanitizers\{Model}Sanitizer` class that does not extend `Sanitizer` gives the third. The class names are examples:
+
+```text
+[laravel-pii-sanitizer] "App\Models\Usr" in pii.models (or --model) is not a valid Eloquent model class. Check the class exists and extends Illuminate\Database\Eloquent\Model.
+[laravel-pii-sanitizer] "App\Sanitizers\UsrSanitizer" in pii.sanitizers is not a valid Sanitizer class. Check the class exists and extends Shahirul22\LaravelPiiSanitizer\Sanitizer.
+[laravel-pii-sanitizer] "App\Sanitizers\UserSanitizer", found by the App\Sanitizers\{Model}Sanitizer naming convention, is not a valid Sanitizer class. Check the class extends Shahirul22\LaravelPiiSanitizer\Sanitizer.
+```
+
+A sanitizer whose `fields()` is empty declares nothing to sanitize, so it is rejected at boot too (the names are examples):
+
+```text
+[laravel-pii-sanitizer] App\Sanitizers\UserSanitizer::fields() is empty, so it declares nothing to sanitize for App\Models\User on table "users". Declare at least one column in fields() (mirrors() only opts in columns that fields() declares), or remove the sanitizer so the target is skipped.
+```
+
 ### Register the model
 
 `pii.models` defaults to `[]` and there is no filesystem auto-discovery, so the model must be listed explicitly in `config/pii.php`:
@@ -217,6 +241,8 @@ php artisan pii:sanitize
 
 Exit code `0` on a successful run or a completed dry run; `1` on an environment-guard refusal, an invalid `--chunk` value, or a failed run.
 
+Every run reads the schema again at its start: columns, column rules, unique indexes and foreign keys. So when two runs happen in one process, for example from a queue worker or `tinker`, a schema change between them is seen by the second run.
+
 ### Dry-run output
 
 For the example above, against a database with 25 users:
@@ -238,6 +264,24 @@ App\Models\User: 1/1 chunks [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 ```
 
 A progress bar is rendered per model while chunks are processed, one line per model, redrawn in place. The exact number of chunks depends on row count and the configured or automatic chunk size.
+
+### When a run fails
+
+Each chunk is written in its own transaction. When a chunk fails, the package rolls that chunk back, stops the run and exits with code `1`. Chunks that finished earlier stay written, and later chunks and models are not attempted. The command names the model, the chunk number and the first and last key of the failed chunk, then the reason:
+
+```text
+  Chunk #1 failed (keys 1–2):
+    RuntimeException: RuntimeException: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.
+```
+
+When the reason is one of the package's own exceptions, such as a constraint or uniqueness error, its message is printed in full, because it holds only model, table and column names. Any other exception can hold row values, so its message is withheld and only its class is kept. There are two such messages. The class name is printed first (the class names below are examples):
+
+```text
+Illuminate\Database\QueryException: the database refused the chunk write. Its original message is withheld because it can contain row values.
+RuntimeException: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.
+```
+
+The first is for an exception from the database, the second for any other exception, such as one thrown by your own closure. The withheld message is not written to a log either. To see the cause, run the failing model on its own with `--model` (this does not work for a `pii.tables` target, which `--model` skips), then reproduce one row of the failed chunk in `php artisan tinker`: load a row from the key range that the command printed, call your value definition on it, or run the same update by hand. A `--dry-run` also calls your value definitions, so it shows an exception from a closure, but it never writes, so it does not show a refusal from the database.
 
 ## Value definition forms
 
@@ -298,7 +342,7 @@ A Faker method name, the form the example above uses:
 
 Any column carrying a unique (or composite-unique) database constraint automatically has its generated replacement values checked against both the existing values already in that column and every value generated earlier in the same run — no opt-in declaration needed. If a value definition's space is too small to keep producing unique values, the run stops with a `UniquenessExhaustedException` naming the column and sanitizer, rather than silently writing a duplicate or looping forever. Widen the value definition (e.g. `$faker->unique()->safeEmail()`, or append the row's primary key) if you hit this.
 
-This check has a cost in memory and in reads. For each unique constraint that involves a declared column, the package reads the existing values of its columns once per run, as a `DISTINCT` scan of the whole table. It keeps those values, and every value it generates, in memory until the run ends. This holds for a random definition and for a `Keyed` one. A `Keyed` definition on a unique column keeps more on top of that (see [Namespaces and patterns](#namespaces-and-patterns)). Plan for this on very large tables.
+This check has a cost in memory and in reads. For each unique constraint that involves a declared column, the package reads the existing values of its columns once per run, as a `DISTINCT` scan of the whole table. It keeps those values, and every value it generates, in memory until the run ends, and clears them then, also when the run fails. This holds for a random definition and for a `Keyed` one. A `Keyed` definition on a unique column keeps more on top of that (see [Namespaces and patterns](#namespaces-and-patterns)). Plan for this on very large tables.
 
 A random value definition gets up to 100 attempts per value before the run stops with that exception. A [`Keyed`](#deterministic-keyed-values) definition on a unique column does not use this retry loop. It is resolved deterministically: if a replacement collides with another value, the package tries the next candidate for the same input, up to 100 probes. If all 100 collide, the run stops with a `UniquenessExhaustedException` and this message (the namespace `staff` is an example):
 
@@ -307,6 +351,13 @@ A random value definition gets up to 100 attempts per value before the run stops
 ```
 
 A masked helper, `Format::keepLength('*')`, always gives the same output for values of the same shape, that is, the same length with the same separators in the same places. On a unique column it runs out of attempts as soon as two values have the same shape. Use `Format::keepLength()` without a mask, or a `Keyed` form, on unique columns. See [Format-preserving helpers](#format-preserving-helpers).
+
+Two rules decide what counts as a collision:
+
+- Strings are compared without regard to case, so `KAREN` and `karen` are the same value, as they are under a case-insensitive collation such as MySQL's `utf8mb4_unicode_ci`. On a case-sensitive collation this only costs a retry for a value that differs from another one in case alone. A collation that also ignores accents or trailing spaces is not matched.
+- A value tuple that holds `NULL` in any of its columns never collides and is not tracked, because by default a unique index on MySQL, MariaDB, PostgreSQL and SQLite does not treat `NULL` as equal to anything. A nullable unique column can keep many `NULL` values. A PostgreSQL index declared `NULLS NOT DISTINCT` is not covered by this rule.
+
+A value that has nothing to replace cannot be made different by a [format-preserving helper](#format-preserving-helpers). The empty string, or a value made only of separators such as `-`, comes back as it was, from the bare helper and from a `Keyed` form alike. On a unique column that value is already taken (it is the row's own original value), so every attempt collides and the run stops with a `UniquenessExhaustedException`, even if only one row holds it. The message then says the value space is too small, which is not the real cause here. It never writes a wrong value. Clean such values up in the database before the run, for example set them to `NULL` if the column allows it (a helper keeps `NULL` as `NULL`), or use a definition that does not depend on the input for that column.
 
 ### Preserving a column's value distribution
 
@@ -325,6 +376,12 @@ A column that uses a [`Keyed`](#deterministic-keyed-values) definition cannot be
 
 ```text
 [laravel-pii-sanitizer] App\Models\Customer::$nric uses a Keyed value-definition and is listed in App\Sanitizers\CustomerSanitizer::categorical(). A categorical column is sampled from its distribution, which would override the keyed value — remove it from categorical().
+```
+
+A column that has a cast or a set mutator cannot be `categorical()` either. The sample is drawn from the raw stored values, and the cast would then encode it a second time. The package rejects this at boot too (the names are examples):
+
+```text
+[laravel-pii-sanitizer] App\Models\Customer::$status has a cast or set mutator and is listed in App\Sanitizers\CustomerSanitizer::categorical(). A categorical column is sampled from the raw stored values, which the cast would encode a second time (a JSON string inside a JSON string, or a ciphertext encrypted again), so remove it from categorical().
 ```
 
 ## Deterministic keyed values
@@ -374,7 +431,7 @@ Treat the key like a password:
 
 - Keep it in your uncommitted `.env` file. Never commit it.
 - Share it with your teammates out of band, the way you share any other secret.
-- The package never logs or prints the key.
+- The package never logs or prints the key. It clears the key it has read, and the original values it kept for `Keyed` columns, when a run ends, also when the run fails, so they do not stay in a long-lived process such as a queue worker or `tinker`.
 - If the key leaks, make a new key and sanitize again from a fresh dump. Then replace every copy that was sanitized under the old key, such as shared dumps, your teammates' databases and fixtures. Those copies can still be reversed with the old key for low-entropy values (see point 2 in [What a keyed value still reveals](#what-a-keyed-value-still-reveals)).
 
 The key is needed only when a sanitizer declares a `Keyed` field, including a `Keyed` inside `Json::paths()`. A run with no `Keyed` field never reads it. If the key is missing, is not valid base64, or is too short, the run fails at boot, before any row is read, with this message:
@@ -422,6 +479,7 @@ What goes in, and what comes out:
 
 - `null` stays `null`. This is true for `Keyed` and for a bare `Format::…` or `Malaysia::…` instance.
 - The input can be an integer, a string, a boolean, a backed enum or a `Stringable`. The number `123` and the string `'123'` map to the same output.
+- The input is used exactly as stored. Inputs that differ only in case or in trailing spaces, such as `Bob@X.com` and `bob@x.com`, map to different outputs. A database whose collation ignores case, or trailing spaces, treats such values as equal, so a foreign key can link two of them, and after a run they no longer match. See [Case and trailing spaces in referenced values](#case-and-trailing-spaces-in-referenced-values).
 - A float or an array is rejected. The message names the type (here, `float`):
 
 ```text
@@ -694,6 +752,8 @@ Bad JSON is a different case, and it depends on the column:
 
   For `encrypted:array` and `encrypted:json`, the package checks the text after decryption. A dry run shows the same failure. A stored SQL `NULL` is not an error. The JSON text `null` is not an error either. Both read as `null`, so the rule above skips every path, and the column is written back as `NULL`.
 
+  A valid document whose root is a scalar, such as `5`, `true` or `"hello"`, is not an error either. Under an array cast it reads as that scalar, which no path can descend into, so the rule above skips every path and the column keeps the same decoded value.
+
 ### Supported columns and carrier limits
 
 A `Json::paths()` column must meet all of these rules. The package checks them at boot, before it reads any row:
@@ -763,7 +823,7 @@ A column with no cast and no set mutator is written as before. The package write
 
 One statement is capped at 400 bound parameters. A row takes `(columns × (identity columns + 1)) + identity columns` of them, where `columns` is the number of columns you declare and `identity columns` is the size of the paging identity. So a sanitizer with many declared columns, or a table with a composite identity, puts fewer rows in each statement and issues more statements per chunk. For example, with one identity column and three declared columns, a row takes 7 parameters and a statement holds 57 rows, so a chunk of 1000 rows is written in 18 statements.
 
-The package refuses a cast column in two cases. In both, it rolls back the chunk, so nothing in that chunk is written, and the run stops. Chunks that finished earlier stay written. Both messages use example names here.
+The package refuses a cast column in three cases. In each, it rolls back the chunk, so nothing in that chunk is written, and the run stops. Chunks that finished earlier stay written. The messages use example names here.
 
 The cast or mutator also writes to other attributes of the row. The package did not ask you to sanitize those, so it will not write them:
 
@@ -777,7 +837,15 @@ The cast or mutator fails to encode the new value. The text in brackets is the c
 [laravel-pii-sanitizer] Cannot sanitize App\Models\Customer::$ssn on table "customers": the model's cast/mutator failed to encode the replacement value (Illuminate\Encryption\MissingAppKeyException). Check the cast's requirements (e.g. APP_KEY for encrypted casts) or remove the column from fields().
 ```
 
-A dry run does the same encoding. It shows both failures and writes nothing.
+The stored value cannot be read through the cast, and the value definition needs the current value. This is the usual state of an `encrypted` column after you import a production dump, because the data was encrypted with another `APP_KEY`. The text in brackets is the class name of the error, never its message:
+
+```text
+[laravel-pii-sanitizer] Cannot sanitize App\Models\Customer::$ssn on table "customers": its stored value could not be read through the cast "encrypted" (Illuminate\Contracts\Encryption\DecryptException), and the column's value definition reads the current value. For an encrypted cast this usually means the data was encrypted with another APP_KEY, as after importing a production dump. Use a static value or a Faker formatter name for this column, which never read the current value, or set APP_KEY to the key the data was encrypted with.
+```
+
+A static value and a Faker method name never read the current value, so a value that cannot be read does not stop them: the package writes the new value over it. Every other definition form (a closure, a `ValueGenerator` instance or class, which includes the `Keyed`, `Format`, `Malaysia` and `Json::paths()` helpers) receives the current value, so it gets the message above.
+
+A dry run does the same encoding. It shows all three failures and writes nothing.
 
 **Encrypted unique columns.** Uniqueness tracking is not meaningful on an encrypted unique column. The values already in such a column are ciphertext, and each encryption of the same text gives a different ciphertext. So the package cannot compare a new value with the values that are already stored. Do not rely on the package to keep an encrypted column unique. See [Preserving a column's uniqueness](#preserving-a-columns-uniqueness) for how uniqueness works on other columns.
 
@@ -831,14 +899,20 @@ A table can have a composite primary key, a UUID or other string primary key, or
 
 To read a table in pages, the package needs a paging identity. This is a column, or a set of columns, that tells the rows apart, is never `NULL`, and is never rewritten by the run. The package finds it at boot, before it reads any row. It tries these sources in order and uses the first one that fits:
 
-1. The primary key. For a composite primary key, this means all of its columns. The package also accepts the model's own key column when the table has it.
-2. The first unique index whose columns are all `NOT NULL` and none of which is listed in `fields()`.
+1. The primary key. For a composite primary key, this means all of its columns. If the table has no primary key that can be used, the model's own key column (`getKeyName()`) when the table has it, it is `NOT NULL`, it is not listed in `fields()` and the check below proves it unique.
+2. The first unique index whose columns are all `NOT NULL` and none of which is listed in `fields()`, if the check below proves it unique. An index made only of expressions, such as a unique index on `lower(email)`, names no column and is skipped. A partial index (one with a `WHERE` clause) or an index that mixes columns and expressions can make its columns unique for some rows only, so it is used only when the check proves its columns unique for every row.
 3. The columns that you declare in `pagingKey()`. See [Declaring a paging key](#declaring-a-paging-key).
-4. Every `NOT NULL` column that is not listed in `fields()`. The package leaves out `json` columns, `binary` columns and decimal or float columns, such as `decimal`, `numeric`, `float`, `double` and `real`.
+4. Every `NOT NULL` column that is not listed in `fields()` and has a string, integer, boolean or date-and-time type. Every other type is left out: `json` and `binary` columns, decimal and floating-point columns such as `decimal`, `numeric`, `float`, `double` and `real`, and any type the package does not know, such as a PostgreSQL `point` or `xml` column.
 
-Sources 3 and 4 depend on your data, not only on the schema. So at boot the package runs a query to check that the columns are unique per row.
+Only the primary key is trusted from the schema alone. Every other source depends on your data, so at boot the package checks each candidate with one query that groups the table by the candidate's columns and looks for a repeated value. The query reads the whole table. A table whose primary key is used gets no such query. A table without one gets one full scan for each candidate that the package tries. A candidate whose check finds a repeat, or that the database cannot run, is not used, and the package goes on to the next source.
 
-A single-column identity, such as an integer `id` or a UUID, is read with Laravel's `chunkById()`. A UUID or other string key is kept as text, so an id made only of digits is not turned into an integer. A multi-column identity is read with a key-set query. Each page starts after the last row of the previous page, and the package never uses `OFFSET`. A key-set query can be slower than single-column paging. (One more case uses the key-set query: a single identity column that has a cast or a get mutator and is not the model's key.)
+A single-column identity, such as an integer `id` or a UUID, is read with Laravel's `chunkById()`. A UUID or other string key is kept as text, so an id made only of digits is not turned into an integer. A multi-column identity is read with a key-set query. Each page starts after the last row of the previous page, and the package never uses `OFFSET`. On PostgreSQL, and on SQLite 3.15 or later, the page filter is a row-value comparison such as `("a", "b") > (?, ?)`. On MySQL, MariaDB and any other driver it is the equivalent chain `(a > ?) OR (a = ? AND b > ?)`. A key-set query can be slower than single-column paging. One more case uses the key-set query: a single identity column whose cast or accessor changes the value the model returns, the model's own key included. Eloquent's default cast on an incrementing integer key does not count.
+
+The package always pages and writes by the raw stored value of an identity column, never by the value that a cast or accessor returns. So a cast or accessor on an identity column is fine.
+
+The run must never change the identity of a row. A column that the database itself rewrites when a row is updated, such as a column with an update trigger or a MySQL `ON UPDATE CURRENT_TIMESTAMP` default, must not be part of the identity. The run's own write would give the row a new identity, so the key-set read can meet the row again and sanitize it twice. A second pass gives a `Keyed` column a value that its mirrors did not get. The package does not detect such a column. Source 4 takes every `NOT NULL` column that fits, so it can pick one up without you noticing. If your table has one, declare a [paging key](#declaring-a-paging-key) without it.
+
+Each page query and each batched `UPDATE` finds rows by the identity columns. A primary key or a unique index comes with an index. A model key that is not the primary key, a declared paging key and the source 4 columns may have none. Without an index whose leading columns are the identity columns, every batched `UPDATE` scans the whole table, so the run time grows with the square of the row count. Create such an index before the run if the identity is not already indexed, for example `CREATE INDEX role_user_paging ON role_user (user_id, role_id)`. The package does not check for one.
 
 Every column of a composite primary key is protected. If you list any one of them in `fields()`, the package rejects it at boot, not only the first column.
 
@@ -871,7 +945,9 @@ class RoleUserSanitizer extends Sanitizer
 }
 ```
 
-On this small table, source 4 would find the same two columns. Declaring the key is still useful. If the table had more `NOT NULL` columns, source 4 would use all of them, which makes a wider key. Source 4 also skips `json`, `binary` and decimal columns, and a declared key is not subject to that rule.
+On this small table, source 4 would find the same two columns. Declaring the key is still useful. If the table had more `NOT NULL` columns, source 4 would use all of them, which makes a wider key. Source 4 also uses only string, integer, boolean and date-and-time columns, and a declared key is not subject to that rule. A declared key also lets you leave out a column that the database rewrites on update (see [Composite, UUID and keyless primary keys](#composite-uuid-and-keyless-primary-keys)).
+
+Give the declared columns an index whose leading columns are the declared columns, in the same order, such as `CREATE INDEX role_user_paging ON role_user (user_id, role_id)` for this example. Without it, every batched `UPDATE` scans the whole table, and the run time grows with the square of the row count.
 
 If your declared key does not meet the rules, the package does not use it. It goes on to source 4. If no source fits, the run stops at boot with an `UnpageableTableException`. This is the message, with example names. For a table target, the class shown is the package's own `TableRow` class:
 
@@ -921,11 +997,17 @@ The type check and the `NULL` check run on all four drivers. The other two check
 | SQLite | Not checked. SQLite does not enforce a declared length. | Checked for an enum, which the package reads from the `CHECK` constraint |
 | Any other driver | Not checked | Not checked |
 
+On MySQL and MariaDB, the package reads `enum` and `set` members with their case, and a replacement must match a member exactly: for `enum('Admin','User')`, `Admin` passes and `admin` is refused. MySQL and MariaDB report a `BOOLEAN` column as `tinyint(1)`, and a `tinyint(1)` column can also hold small codes, so such a column accepts a boolean or any whole number from -128 to 127. A real boolean type, such as PostgreSQL `boolean`, accepts only a boolean, `0` or `1`.
+
 On any other driver, the package checks only whether the column allows `NULL`. A value that breaks a rule that the package does not check is not stopped by the package. The database may then reject it, or accept it.
 
 ### What was verified, and what was not
 
-The tests of this package run on SQLite. The statements below have been tested only with stubs and with SQLite. They have not been run against a real MySQL, MariaDB or PostgreSQL server.
+The automated tests of this package run on SQLite. Unless a statement below says otherwise, the behaviour on MySQL, MariaDB and PostgreSQL has been tested only with stubs and with SQLite, not against a real server.
+
+The package writes each chunk with batched `UPDATE` statements, each capped at 400 bound parameters (see [Cast and mutator columns](#cast-and-mutator-columns)), and a new value goes into them as a bound parameter inside a `CASE` expression. PostgreSQL gives such a parameter the type `text`, which it does not convert to most other column types on its own. So on PostgreSQL the package casts each bound value to the type of its column, as the schema reports it without a length or precision, for example `CAST(? AS integer)` or `CAST(? AS character varying)`. On every other driver the value is bound without a cast.
+
+Before this release, a full run was made against a real PostgreSQL 17 server. Its batched writes succeeded for `integer`, `bigint`, `smallint`, `numeric`, `double precision`, `boolean`, `date`, `timestamp`, `text`, `varchar`, `json`, `jsonb` and `uuid` columns. The `json` and `jsonb` columns included a `Json::paths()` column with no cast and an array-cast `jsonb` column. The same run read a soft-deleted row and paged a table by a two-column paging key with the row-value comparison. Other PostgreSQL column types were not run. The checks of foreign keys on a table in a schema other than the default one were also run against PostgreSQL 17 (see [Unsafe columns are rejected before a single row is read](#unsafe-columns-are-rejected-before-a-single-row-is-read)).
 
 When you opt a referenced column in with `mirrors()` and it takes part in a foreign key, the package switches foreign-key enforcement off for the run and restores the setting afterwards. It uses these statements:
 
@@ -937,13 +1019,11 @@ PostgreSQL:      SET session_replication_role = 'replica', then back to 'origin'
 
 The MySQL, MariaDB and PostgreSQL statements are verified only against stubs and SQLite.
 
-The package writes each chunk with batched `UPDATE` statements, each capped at 400 bound parameters (see [Cast and mutator columns](#cast-and-mutator-columns)), and a new value goes into them as a bound parameter inside a `CASE` expression. For a `json` or `jsonb` column on PostgreSQL, the package has not confirmed that PostgreSQL accepts this assignment. This applies to a `Json::paths()` column and to an array-cast JSON column. The PostgreSQL `json` and `jsonb` batched writes are verified only against stubs and SQLite.
-
 Before you rely on any of this on MySQL, MariaDB or PostgreSQL, run it on a copy of your database first.
 
 ## Referenced columns
 
-By default the package refuses to rewrite a foreign-key column, a column that a foreign key references, or a primary-key column (see [Unsafe columns are rejected before a single row is read](#unsafe-columns-are-rejected-before-a-single-row-is-read)). Sometimes the same value must change in several places at once and must still match afterwards, for example a customer's NRIC in `customers.nric` and in `orders.customer_nric`. This section shows how to opt such a column in ([Opting a column in with mirrors()](#opting-a-column-in-with-mirrors)), what you must declare yourself ([You must declare every mirror column](#you-must-declare-every-mirror-column)), what the package does to foreign-key enforcement during the run ([Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run)), what your database must allow ([Database requirements and side effects](#database-requirements-and-side-effects)) and the case of a key that points at its own table ([A key that references its own table](#a-key-that-references-its-own-table)) and the extra rule for a primary-key column ([Opting in a primary-key column](#opting-in-a-primary-key-column)).
+By default the package refuses to rewrite a foreign-key column, a column that a foreign key references, or a primary-key column (see [Unsafe columns are rejected before a single row is read](#unsafe-columns-are-rejected-before-a-single-row-is-read)). Sometimes the same value must change in several places at once and must still match afterwards, for example a customer's NRIC in `customers.nric` and in `orders.customer_nric`. This section shows how to opt such a column in ([Opting a column in with mirrors()](#opting-a-column-in-with-mirrors)), what you must declare yourself ([You must declare every mirror column](#you-must-declare-every-mirror-column)), what happens to values that differ only in case ([Case and trailing spaces in referenced values](#case-and-trailing-spaces-in-referenced-values)), what the package does to foreign-key enforcement during the run ([Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run)), what your database must allow ([Database requirements and side effects](#database-requirements-and-side-effects)) and the case of a key that points at its own table ([A key that references its own table](#a-key-that-references-its-own-table)) and the extra rule for a primary-key column ([Opting in a primary-key column](#opting-in-a-primary-key-column)).
 
 ### Opting a column in with mirrors()
 
@@ -998,13 +1078,21 @@ Both `Keyed::using('nric', Malaysia::nric())` definitions use the same namespace
 - Each column is declared in `fields()` by exactly one target of the run.
 - Write a table name as the model's `getTable()` returns it.
 
-The package checks a `mirrors()` entry at boot, before it reads any row. A bad entry stops the run. An entry can be invalid for four reasons, and these are the four messages (the class, column and table names are examples):
+The package checks a `mirrors()` entry at boot, before it reads any row. A bad entry stops the run. These are the messages (the class, column and table names are examples, and so are the type names `string` and `int`):
 
 ```text
 [laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: the column is not declared in fields().
+[laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: the mirror list is a string, not a list of "table.column" strings.
 [laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: the mirror list is empty.
+[laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: a mirror entry is an int, not a "table.column" string.
 [laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: mirror "orders" is not of the form table.column.
 [laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry for $nric is invalid: mirror "customers.nric" names the column itself.
+```
+
+A `mirrors()` written as a plain list, such as `['orders.customer_nric']`, has no column names, so it gets this message (the number is the position in the list):
+
+```text
+[laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() entry 0 is invalid: it has no column name. mirrors() must be a map of column => list of "table.column" strings, for example ['nric' => ['orders.customer_nric']].
 ```
 
 A column in `mirrors()` that is not a `Keyed` definition is refused, because only `Keyed` guarantees that a column and its mirrors get the same replacement:
@@ -1074,6 +1162,15 @@ Every mirror that you declare must also be sanitized in the same run. If it is n
 ```text
 [laravel-pii-sanitizer] App\Sanitizers\CustomerSanitizer::mirrors() declares "orders.customer_nric" as a mirror of $nric, but no sanitize target in this run declares that column in fields(). Declare it in its table's sanitizer with the same Keyed namespace, and do not exclude that target (for example with --model, which also skips pii.tables).
 ```
+
+### Case and trailing spaces in referenced values
+
+A `Keyed` value is computed from the input exactly as it is stored (see [Namespaces and patterns](#namespaces-and-patterns)). A database whose collation ignores case, such as MySQL's `utf8mb4_unicode_ci`, compares `Bob@X.com` and `bob@x.com` as equal, and a collation that pads with spaces also ignores trailing spaces. So a foreign key can link a child value to a parent value that differs from it in case or in trailing spaces. The package maps the two to different outputs. After the run the child no longer matches its parent, and because the database does not check existing rows again when enforcement comes back on, nothing reports it. The join is silently broken.
+
+The package does not detect this. Two ways to avoid it:
+
+- Normalise the values in the database before the run, so every copy of one value has the same case and no trailing spaces, for example with an `UPDATE` that sets the column to `LOWER(TRIM(...))` in every table of the group.
+- Keep such a column out of an opt-in group, so it stays rejected and is not rewritten.
 
 ### Foreign-key enforcement during the run
 
@@ -1147,6 +1244,9 @@ A paging identity of several columns is read with a key-set query, which can be 
 - **Referenced and primary-key columns are rejected by default.** A foreign-key column, a column that another table's foreign key references, and a primary-key column are rejected at sanitizer-resolution time, before any row is read. You can opt in one column at a time with `mirrors()` and a `Keyed` definition. See [Referenced columns](#referenced-columns).
 - **A column referenced by a key on its own table is rejected by default.** A column that is referenced only by a foreign key on its own table is rejected as a referenced column, like a column that another table references. For example, `employees.manager_staff_id` is a foreign key to `employees.staff_id`. Both are rejected: `manager_staff_id` as a foreign key, and `staff_id` as a referenced column. If you want to sanitize them, declare both through `mirrors()` with one `Keyed` namespace (see [A key that references its own table](#a-key-that-references-its-own-table)).
 - **No reference-graph discovery.** The package never works out which columns hold the same value. You declare every mirror column yourself, and an incomplete declaration silently yields inconsistent references. See [You must declare every mirror column](#you-must-declare-every-mirror-column).
+- **Keyed values follow the stored case.** Values that differ only in case or trailing spaces get different `Keyed` outputs, so a foreign key that matched them under a case-insensitive collation can stop matching. See [Case and trailing spaces in referenced values](#case-and-trailing-spaces-in-referenced-values).
+- **Nothing to replace on a unique column.** An empty or separator-only value cannot be changed by a format-preserving helper, so on a unique column the run stops with a uniqueness error. See [Preserving a column's uniqueness](#preserving-a-columns-uniqueness).
+- **Paging identity needs care on keyless tables.** It must not include a column that the database rewrites on update, and it needs an index to keep the run time linear. See [Composite, UUID and keyless primary keys](#composite-uuid-and-keyless-primary-keys).
 - **No file or binary PII, and not a security control.** See [What this package does not do](#what-this-package-does-not-do).
 - **Single default connection.** Only the default database connection is supported and tested. A model that sets its own `$connection` is read and written on that connection, so do not list such models.
 - **No model auto-discovery.** `pii.models` and `pii.tables` are explicit lists; nothing is discovered by scanning the filesystem.

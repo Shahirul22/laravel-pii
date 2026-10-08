@@ -117,6 +117,19 @@ namespace {
         'entry is an array (BUG-18)' => [true, ['nric' => [['sgm_orders.customer_nric']]], 'nric', 'a mirror entry is an array, not a "table.column" string'],
     ]);
 
+    it('says mirrors() must be a map when it is declared as a list', function () {
+        $sanitizer = sgmSanitizer(['nric' => sgmKeyed()], ['sgm_orders.customer_nric']);
+
+        try {
+            app(SchemaGuard::class)->assertSafe($sanitizer, SgmCustomer::class);
+
+            $this->fail('Expected InvalidConfigurationException to be thrown.');
+        } catch (InvalidConfigurationException $exception) {
+            expect($exception->getMessage())->toBe('[laravel-pii-sanitizer] '.$sanitizer::class.'::mirrors() entry 0 is invalid: it has no column name. mirrors() must be a map of column => list of "table.column" strings, for example [\'nric\' => [\'orders.customer_nric\']].');
+            expect($exception->getMessage())->not->toContain('$0');
+        }
+    });
+
     it('gives a mirrors-only sanitizer with an empty fields() the empty-fields error (BUG-9)', function () {
         $sanitizer = sgmSanitizer([], ['nric' => ['sgm_orders.customer_nric']]);
 

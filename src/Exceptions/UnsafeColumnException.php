@@ -60,6 +60,36 @@ final class UnsafeColumnException extends \RuntimeException
         );
     }
 
+    /**
+     * A foreign key declared without its referenced columns (SQLite
+     * `REFERENCES parent`) whose columns cannot be resolved to the
+     * referenced table's primary key.
+     *
+     * @param  list<string>  $columns
+     */
+    public static function unresolvedForeignKey(string $table, array $columns, string $foreignTable): self
+    {
+        $columnList = implode(', ', $columns);
+
+        return new self(
+            "[laravel-pii-sanitizer] The foreign key on table \"{$table}\" (column {$columnList}) references table \"{$foreignTable}\" without naming the referenced columns, and they cannot be resolved to the primary key of \"{$foreignTable}\". Name the referenced columns in the foreign key so the package can check which columns it links."
+        );
+    }
+
+    /**
+     * @param  list<string>  $childColumns
+     * @param  list<string>  $parentColumns
+     */
+    public static function malformedForeignKey(string $childTable, array $childColumns, string $parentTable, array $parentColumns): self
+    {
+        $children = implode(', ', $childColumns);
+        $parents = implode(', ', $parentColumns);
+
+        return new self(
+            "[laravel-pii-sanitizer] The foreign key {$childTable}({$children}) -> {$parentTable}({$parents}) pairs ".count($childColumns).' column(s) with '.count($parentColumns)." referenced column(s), so the package cannot tell which columns it links. Check the foreign key on table \"{$childTable}\"."
+        );
+    }
+
     public static function foreignKeySuspensionUnavailable(string $driver, string $reason): self
     {
         return new self(

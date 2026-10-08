@@ -94,9 +94,20 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         $inbound = $this->foreignKeys->inboundReferencedColumns($connection, $table);
+        $canonicalTable = $this->foreignKeys->canonicalTableName($connection, $table);
+
+        /** @var list<string> $selfReferenced columns whose referencing table is this table itself, rejected after the primary-key check */
+        $selfReferenced = [];
 
         foreach ($columns as $column) {
             if (in_array($column, $optedIn, true)) {
+                continue;
+            }
+
+            // A self-referenced primary key keeps its primary-key message, as before self references were indexed.
+            if (($inbound[$column] ?? null) === $canonicalTable) {
+                $selfReferenced[] = $column;
+
                 continue;
             }
 
@@ -143,6 +154,16 @@ class SchemaGuard implements SchemaGuardContract
             if (in_array($column, $protected, true)) {
                 throw UnsafeColumnException::primaryKey($modelClass, $column, $sanitizer::class, $table);
             }
+        }
+
+        if ($selfReferenced !== []) {
+            throw UnsafeColumnException::inboundReference(
+                $modelClass,
+                $selfReferenced[0],
+                $sanitizer::class,
+                $table,
+                $inbound[$selfReferenced[0]]
+            );
         }
 
         $this->assertJsonPathsDeclarable($sanitizer, $instance, $modelClass, $table, $fields);

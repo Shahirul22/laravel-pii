@@ -113,9 +113,10 @@ namespace {
         expect(DB::getQueryLog())->toBe([]);
     });
 
-    it('keeps the v1 same-table skip in inboundReferencedColumns()', function () {
+    it('reports a column referenced only by a self-referencing key as inbound-referenced', function () {
         $inbound = (new ForeignKeyInspector)->inboundReferencedColumns(DB::connection(), 'fki_employees');
 
-        expect($inbound)->not->toHaveKey('staff_id');
+        expect($inbound)->toHaveKey('staff_id');
+        expect($inbound['staff_id'])->toBe('fki_employees');
     });
 }

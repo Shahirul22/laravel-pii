@@ -8,6 +8,7 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
+use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
 use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
 /**
@@ -159,8 +160,14 @@ class ReplacementGenerator
             }
         }
 
+        $current = $row->getAttribute($column);
+
+        if ($current === null && $fields[$column] instanceof JsonPaths && $this->holdsUndecodableJson($row, $column)) {
+            throw InvalidReplacementValueException::inColumn($column, InvalidReplacementValueException::invalidJsonDocument());
+        }
+
         try {
-            $value = $this->resolver->resolve($fields[$column], $row->getAttribute($column), $faker, $row);
+            $value = $this->resolver->resolve($fields[$column], $current, $faker, $row);
         } catch (InvalidReplacementValueException $e) {
             // A ValueGenerator instance cannot know its column, so name it here.
             if ($fields[$column] instanceof ValueGenerator) {
@@ -175,6 +182,40 @@ class ReplacementGenerator
         }
 
         return $value;
+    }
+
+    /**
+     * Whether an array-cast Json::paths() column came back null from Eloquent
+     * although its stored value is non-null text that is not valid JSON.
+     * fromJson() turns the empty string and malformed text into null without
+     * throwing, so without this check the original text would be re-encoded as
+     * NULL and lost. SQL NULL and the JSON literal null are not undecodable.
+     * An uncast column is a string carrier, which JsonPaths itself validates.
+     */
+    private function holdsUndecodableJson(Model $row, string $column): bool
+    {
+        if (! $row->hasCast($column)) {
+            return false;
+        }
+
+        $raw = $row->getRawOriginal($column);
+
+        if (! is_string($raw)) {
+            return false;
+        }
+
+        if ($row->hasCast($column, ['encrypted:array', 'encrypted:json'])) {
+            // getAttribute() already decrypted this value successfully to reach null.
+            $raw = $row->fromEncryptedString($raw);
+        }
+
+        if ($raw === '') {
+            return true;
+        }
+
+        json_decode($raw);
+
+        return json_last_error() !== JSON_ERROR_NONE;
     }
 
     /**

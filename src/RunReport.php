@@ -11,6 +11,7 @@ final class RunReport
         public readonly array $models,
         public readonly bool $dryRun,
         public readonly bool $foreignKeysSuspended = false,
+        public readonly bool $triggersSuspended = false,
     ) {}
 
     public function failed(): bool

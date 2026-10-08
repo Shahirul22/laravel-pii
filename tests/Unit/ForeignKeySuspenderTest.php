@@ -211,4 +211,16 @@ namespace {
         expect(fn () => $suspender->suspend($connection))
             ->toThrow(UnsafeColumnException::class, 'which is not possible here: the "sqlsrv" driver is not supported for opted-in referenced columns.');
     });
+
+    it('reports that only PostgreSQL suspension also stops ordinary triggers', function (string $driver, bool $expected) {
+        $connection = Mockery::mock(Connection::class);
+        $connection->shouldReceive('getDriverName')->andReturn($driver);
+
+        expect((new ForeignKeySuspender)->suspendsTriggers($connection))->toBe($expected);
+    })->with([
+        'pgsql' => ['pgsql', true],
+        'mysql' => ['mysql', false],
+        'mariadb' => ['mariadb', false],
+        'sqlite' => ['sqlite', false],
+    ]);
 }

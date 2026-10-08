@@ -19,7 +19,7 @@ use Shahirul22\LaravelPiiSanitizer\ValueDefinitionResolver;
  *
  * The single absent/null rule, byte-exact:
  *
- * A declared path is skipped for a row when its target is absent or null: the column value is NULL or the empty string, the value at a segment that must descend is not a JSON object or array, a key or index on the way is missing, or the value found is JSON null. A skipped path's definition is not called, nothing is written for it, no structure is created and no error is raised. Every other declared path in the same row is still applied. A wildcard segment applies this rule to each matched element on its own; a wildcard over an empty array or object matches nothing.
+ * A declared path is skipped for a row when its target is absent or null: the column value is NULL or, on a column with no cast, the empty string, the value at a segment that must descend is not a JSON object or array, a key or index on the way is missing, or the value found is JSON null. A skipped path's definition is not called, nothing is written for it, no structure is created and no error is raised. Every other declared path in the same row is still applied. A wildcard segment applies this rule to each matched element on its own; a wildcard over an empty array or object matches nothing.
  *
  * A string column value is decoded, patched and re-encoded; an array column
  * value (an array-cast column) is patched and returned as an array. When no

@@ -20,6 +20,8 @@ The prompt defaults to no. Under `--no-interaction` (or `-n`), the confirmation 
 
 The guard checks the name of the environment (`APP_ENV`) against the allow-list. It does not check which database the application connects to. An application with `APP_ENV=local` that is pointed at a production database is allowed to run.
 
+Laravel's own `--env` option changes the detected environment name too. So `php artisan pii:sanitize --env=local` passes the guard on any machine, with no `--force` and no confirmation prompt. This is how the framework works, and it is a deliberate override of the same kind as `--force`. The guard protects against accidents. It does not protect against someone who overrides it on purpose.
+
 ### `--dry-run` writes nothing
 
 ```bash
@@ -33,7 +35,7 @@ Reports the number of rows that would be sanitized per model, plus a per-column 
 By default, the package rejects three kinds of column at sanitizer-resolution time, before the engine reads any row, rather than rewriting them:
 
 - A foreign-key column.
-- A column that another table's foreign key references.
+- A column that a foreign key references, whether the key is on another table or on the same table.
 - A primary-key column. For a composite primary key, this means every column of the key.
 
 Rewriting such a column on its own would break relational integrity, or the chunked read that pages by it, so the package refuses instead. The rejection of a foreign-key column or a referenced column ends with this hint:
@@ -44,7 +46,7 @@ To sanitize it consistently with the columns that hold the same value, declare i
 
 You can lift the rejection for one column at a time. You list the column in `mirrors()` together with every column that holds the same value, and you give all of them a `Keyed` definition in one namespace. Nothing else lifts it. See [Referenced columns](#referenced-columns).
 
-Opting in also switches foreign-key enforcement off for the run, and on PostgreSQL it stops ordinary triggers too. Read [Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run) and [Database requirements and side effects](#database-requirements-and-side-effects) before you opt a column in.
+Opting in also switches foreign-key enforcement off for the run, and on PostgreSQL it stops ordinary triggers too. A dry run does not leave enforcement off: on PostgreSQL it sets `session_replication_role` to `replica` for a moment to prove that it can, and then restores it. Read [Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run) and [Database requirements and side effects](#database-requirements-and-side-effects) before you opt a column in.
 
 ### Timestamp columns are never touched unless you declare them
 
@@ -373,7 +375,7 @@ Treat the key like a password:
 - Keep it in your uncommitted `.env` file. Never commit it.
 - Share it with your teammates out of band, the way you share any other secret.
 - The package never logs or prints the key.
-- If the key leaks, make a new key and sanitize again from a fresh dump. Data that was sanitized under the old key can still be reversed with the old key (see points 2 and 3 in [What a keyed value still reveals](#what-a-keyed-value-still-reveals)).
+- If the key leaks, make a new key and sanitize again from a fresh dump. Then replace every copy that was sanitized under the old key, such as shared dumps, your teammates' databases and fixtures. Those copies can still be reversed with the old key for low-entropy values (see point 2 in [What a keyed value still reveals](#what-a-keyed-value-still-reveals)).
 
 The key is needed only when a sanitizer declares a `Keyed` field, including a `Keyed` inside `Json::paths()`. A run with no `Keyed` field never reads it. If the key is missing, is not valid base64, or is too short, the run fails at boot, before any row is read, with this message:
 
@@ -671,7 +673,7 @@ Some keys cannot be addressed at all. A key that contains `->` is read as two se
 One rule covers every case where a path has nothing to rewrite:
 
 ```text
-A declared path is skipped for a row when its target is absent or null: the column value is NULL or the empty string, the value at a segment that must descend is not a JSON object or array, a key or index on the way is missing, or the value found is JSON null. A skipped path's definition is not called, nothing is written for it, no structure is created and no error is raised. Every other declared path in the same row is still applied. A wildcard segment applies this rule to each matched element on its own; a wildcard over an empty array or object matches nothing.
+A declared path is skipped for a row when its target is absent or null: the column value is NULL or, on a column with no cast, the empty string, the value at a segment that must descend is not a JSON object or array, a key or index on the way is missing, or the value found is JSON null. A skipped path's definition is not called, nothing is written for it, no structure is created and no error is raised. Every other declared path in the same row is still applied. A wildcard segment applies this rule to each matched element on its own; a wildcard over an empty array or object matches nothing.
 ```
 
 In the example above, a row whose `preferences` is `{"theme":"light"}` is left as it is, and so is a row where `preferences` is `NULL`. `emergency->*->name` skips an element that has no `name`, or whose `name` is `null`, and still rewrites the elements that have one.
@@ -684,7 +686,13 @@ Bad JSON is a different case, and it depends on the column:
   [laravel-pii-sanitizer] $preferences: The column value is not a valid JSON document, so its declared paths cannot be rewritten.
   ```
 
-- **An array cast** (`array`, `json`, `json:unicode`, `encrypted:array` or `encrypted:json`). Laravel reads an empty or malformed JSON text as `null`. The rule above then skips every path. But the column is re-encoded and written for every row (see [Supported columns and carrier limits](#supported-columns-and-carrier-limits)), so that `null` is written back as `NULL`. An empty or malformed JSON text under an array cast is written back as `NULL`. The original text is lost. If the column is `NOT NULL`, the write is refused and the chunk is rolled back (see below).
+- **An array cast** (`array`, `json`, `json:unicode`, `encrypted:array` or `encrypted:json`). Laravel reads an empty or malformed JSON text as `null` and raises no error. The package does not let that pass, because the column is re-encoded and written for every row (see [Supported columns and carrier limits](#supported-columns-and-carrier-limits)) and the original text would be lost. If the stored text is not valid JSON, the chunk stops and nothing in that chunk is written. This includes the empty string. The message is the same as for a column with no cast, it names the column and it does not print the value:
+
+  ```text
+  [laravel-pii-sanitizer] $preferences: The column value is not a valid JSON document, so its declared paths cannot be rewritten.
+  ```
+
+  For `encrypted:array` and `encrypted:json`, the package checks the text after decryption. A dry run shows the same failure. A stored SQL `NULL` is not an error. The JSON text `null` is not an error either. Both read as `null`, so the rule above skips every path, and the column is written back as `NULL`.
 
 ### Supported columns and carrier limits
 
@@ -735,7 +743,7 @@ Four more rules apply:
   [laravel-pii-sanitizer] The static value for path "contact->when" of App\Models\User::$preferences in App\Sanitizers\UserSanitizer::fields() is a DateTime, which cannot be written into JSON. Use null, a scalar, an array or an enum.
   ```
 
-- **Constraints name the column, not the path.** The package checks the new value of the whole column against its constraints, as it does for any column. So an error from that check names the column and never a path. For example, an array-cast column that is `NOT NULL` and holds an empty text (see [Absent and null paths](#absent-and-null-paths)) stops the chunk with this message (the names are examples):
+- **Constraints name the column, not the path.** The package checks the new value of the whole column against its constraints, as it does for any column. So an error from that check names the column and never a path. For example, an array-cast column that is `NOT NULL` and holds the JSON text `null` (see [Absent and null paths](#absent-and-null-paths)) stops the chunk with this message (the names are examples):
 
   ```text
   [laravel-pii-sanitizer] Cannot sanitize App\Models\User::$preferences on table "users": the replacement value is null but the column is NOT NULL (nullability constraint). Return a non-null value from its definition in fields().
@@ -935,7 +943,7 @@ Before you rely on any of this on MySQL, MariaDB or PostgreSQL, run it on a copy
 
 ## Referenced columns
 
-By default the package refuses to rewrite a foreign-key column, a column that a foreign key references, or a primary-key column (see [Unsafe columns are rejected before a single row is read](#unsafe-columns-are-rejected-before-a-single-row-is-read)). Sometimes the same value must change in several places at once and must still match afterwards, for example a customer's NRIC in `customers.nric` and in `orders.customer_nric`. This section shows how to opt such a column in ([Opting a column in with mirrors()](#opting-a-column-in-with-mirrors)), what you must declare yourself ([You must declare every mirror column](#you-must-declare-every-mirror-column)), what the package does to foreign-key enforcement during the run ([Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run)), what your database must allow ([Database requirements and side effects](#database-requirements-and-side-effects)) and the extra rule for a primary-key column ([Opting in a primary-key column](#opting-in-a-primary-key-column)).
+By default the package refuses to rewrite a foreign-key column, a column that a foreign key references, or a primary-key column (see [Unsafe columns are rejected before a single row is read](#unsafe-columns-are-rejected-before-a-single-row-is-read)). Sometimes the same value must change in several places at once and must still match afterwards, for example a customer's NRIC in `customers.nric` and in `orders.customer_nric`. This section shows how to opt such a column in ([Opting a column in with mirrors()](#opting-a-column-in-with-mirrors)), what you must declare yourself ([You must declare every mirror column](#you-must-declare-every-mirror-column)), what the package does to foreign-key enforcement during the run ([Foreign-key enforcement during the run](#foreign-key-enforcement-during-the-run)), what your database must allow ([Database requirements and side effects](#database-requirements-and-side-effects)) and the case of a key that points at its own table ([A key that references its own table](#a-key-that-references-its-own-table)) and the extra rule for a primary-key column ([Opting in a primary-key column](#opting-in-a-primary-key-column)).
 
 ### Opting a column in with mirrors()
 
@@ -1014,6 +1022,39 @@ A mirror column that two targets of the run both declare is refused, and so are 
 
 For the key that `Keyed` needs, see [Setting the key](#setting-the-key).
 
+### A key that references its own table
+
+A foreign key on a table can point at another column of the same table. Take `employees`, with a surrogate primary key `id`, a unique natural key `staff_id`, and a column `manager_staff_id` with a foreign key to `employees.staff_id`. Without an opt-in, the package rejects both columns before it reads any row. `manager_staff_id` is a foreign-key column. `staff_id` is a referenced column, so a sanitizer that lists it in `fields()` fails with this message (the names are examples):
+
+```text
+[laravel-pii-sanitizer] App\Models\Employee::$staff_id is referenced by a foreign key on table "employees" and cannot be sanitized. Remove it from App\Sanitizers\EmployeeSanitizer::fields() — v1 sanitizes flat columns only. To sanitize it consistently with the columns that hold the same value, declare it in mirrors() with a Keyed definition.
+```
+
+To sanitize them, put both columns in one sanitizer. Give each a `Keyed` definition in one namespace, and give each a `mirrors()` entry that names the other:
+
+```php
+class EmployeeSanitizer extends Sanitizer
+{
+    public function fields(): array
+    {
+        return [
+            'staff_id' => Keyed::pattern('staff', 'EMP-#####'),
+            'manager_staff_id' => Keyed::pattern('staff', 'EMP-#####'),
+        ];
+    }
+
+    public function mirrors(): array
+    {
+        return [
+            'staff_id' => ['employees.manager_staff_id'],
+            'manager_staff_id' => ['employees.staff_id'],
+        ];
+    }
+}
+```
+
+The rules for the other mirrors apply here too. The primary key `id` of a table that points at itself, for example `parent_id` to `id` in a tree table, is still rejected as a primary-key column, and `parent_id` as a foreign-key column.
+
 ### You must declare every mirror column
 
 The package does not discover the reference graph. It does not look at your foreign keys to decide which columns belong together. You must declare every mirror column yourself, in `mirrors()` for a column that the package would reject, and with a `Keyed` field in the same namespace for a plain copy. The package never adds a mirror on its own.
@@ -1044,7 +1085,13 @@ When the package really changed the setting, the command prints this line after 
 Foreign-key enforcement was suspended for this run because opted-in referenced columns were rewritten.
 ```
 
-The line does not appear in these cases:
+On PostgreSQL the line also names triggers, because the `replica` setting stops them too (see [Database requirements and side effects](#database-requirements-and-side-effects)):
+
+```text
+Foreign-key enforcement and ordinary triggers were suspended for this run because opted-in referenced columns were rewritten.
+```
+
+Neither line appears in these cases:
 
 - The run is a `--dry-run`. A dry run checks that suspension is possible, but it never leaves enforcement off. On PostgreSQL it sets `session_replication_role` to `replica` for a moment to prove that the role may do so, and then sets it back (see [Database requirements and side effects](#database-requirements-and-side-effects)).
 - No opted-in group has a foreign key.
@@ -1075,7 +1122,7 @@ the "oracle" driver is not supported for opted-in referenced columns
 In the third reason, `oracle` is an example. It is the name of your driver.
 
 - **PostgreSQL privilege.** The package sets `session_replication_role` to `replica`. This needs a superuser, or, on PostgreSQL 15 and later, `GRANT SET ON PARAMETER session_replication_role` for the database role that you use. A dry run sets the role to `replica` for a moment and sets it back, to prove that it can.
-- **PostgreSQL trigger side effect.** The `replica` setting also stops ordinary triggers for the run, not only foreign-key checks. Triggers that are `ENABLE ALWAYS` or `ENABLE REPLICA` still fire. The notice above names only foreign keys, so remember this when your tables have triggers, for example audit triggers or triggers that keep a copy of a value up to date. If the connection is dropped and opened again in the middle of the run, the setting is lost, the next chunk fails and the run stops.
+- **PostgreSQL trigger side effect.** The `replica` setting also stops ordinary triggers for the run, not only foreign-key checks. Triggers that are `ENABLE ALWAYS` or `ENABLE REPLICA` still fire. The PostgreSQL notice above names triggers for this reason. Remember it when your tables have triggers, for example audit triggers or triggers that keep a copy of a value up to date. If the connection is dropped and opened again in the middle of the run, the setting is lost, the next chunk fails and the run stops.
 - **SQLite.** SQLite cannot switch enforcement off inside an open transaction. This is the case when a test uses `RefreshDatabase` or `DatabaseTransactions`. If the connection is inside a transaction and enforcement is on, the run is refused at boot. If enforcement is already off, nothing is refused.
 - **Other drivers.** Only SQLite, MySQL, MariaDB and PostgreSQL are supported. Any other driver is refused.
 
@@ -1098,14 +1145,14 @@ A paging identity of several columns is read with a key-set query, which can be 
 ## Known limitations
 
 - **Referenced and primary-key columns are rejected by default.** A foreign-key column, a column that another table's foreign key references, and a primary-key column are rejected at sanitizer-resolution time, before any row is read. You can opt in one column at a time with `mirrors()` and a `Keyed` definition. See [Referenced columns](#referenced-columns).
-- **A same-table reference is not rejected by default.** A column that is referenced only by a foreign key on its own table is not rejected as a referenced column. For example, `employees.manager_staff_id` is a foreign key to `employees.staff_id`. The column `manager_staff_id` is rejected as a foreign key, but `staff_id` is not rejected as a referenced column (unless it is also the primary key). If you put `staff_id` in `fields()` without `mirrors()`, the run starts, and the database can refuse the write part-way through. If you want to sanitize it, declare it and `manager_staff_id` through `mirrors()` with one `Keyed` namespace.
+- **A column referenced by a key on its own table is rejected by default.** A column that is referenced only by a foreign key on its own table is rejected as a referenced column, like a column that another table references. For example, `employees.manager_staff_id` is a foreign key to `employees.staff_id`. Both are rejected: `manager_staff_id` as a foreign key, and `staff_id` as a referenced column. If you want to sanitize them, declare both through `mirrors()` with one `Keyed` namespace (see [A key that references its own table](#a-key-that-references-its-own-table)).
 - **No reference-graph discovery.** The package never works out which columns hold the same value. You declare every mirror column yourself, and an incomplete declaration silently yields inconsistent references. See [You must declare every mirror column](#you-must-declare-every-mirror-column).
 - **No file or binary PII, and not a security control.** See [What this package does not do](#what-this-package-does-not-do).
 - **Single default connection.** Only the default database connection is supported and tested. A model that sets its own `$connection` is read and written on that connection, so do not list such models.
 - **No model auto-discovery.** `pii.models` and `pii.tables` are explicit lists; nothing is discovered by scanning the filesystem.
 - **Development-time only.** There is no production story, by design.
 
-The v1 guarantees still hold. The environment guard and `--force` work as before. Chunking is automatic and you can override it. Each chunk runs in its own transaction, and a failure is reported. `--dry-run` writes nothing. Running it again on data that is already sanitized does not repair or undo anything. It sanitizes the data again, and a `Keyed` value is mapped again, so the result is not the same as after the first run (see [What a keyed value still reveals](#what-a-keyed-value-still-reveals), point 6). A sanitizer is found by convention, and `pii.sanitizers` overrides it. The value types, uniqueness preservation and distribution preservation are unchanged. Features that are planned but not yet shipped are in the [Roadmap](#roadmap).
+The v1 guarantees still hold. The environment guard and `--force` work as before. Chunking is automatic and you can override it. Each chunk runs in its own transaction, and a failure is reported. `--dry-run` writes nothing. Running the sanitizer again (not a dry run) on data that is already sanitized does not repair or undo anything. It sanitizes the data again, and a `Keyed` value is mapped again, so the result is not the same as after the first run (see [What a keyed value still reveals](#what-a-keyed-value-still-reveals), point 6). A sanitizer is found by convention, and `pii.sanitizers` overrides it. The value types, uniqueness preservation and distribution preservation are unchanged. Features that are planned but not yet shipped are in the [Roadmap](#roadmap).
 
 ## Roadmap
 

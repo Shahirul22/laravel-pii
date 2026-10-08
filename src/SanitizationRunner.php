@@ -179,6 +179,7 @@ final class SanitizationRunner
         $reports = [];
         $restores = [];
         $foreignKeysSuspended = false;
+        $triggersSuspended = false;
 
         try {
             if (! $options->dryRun) {
@@ -188,6 +189,7 @@ final class SanitizationRunner
                     if ($restore !== null) {
                         $restores[] = $restore;
                         $foreignKeysSuspended = true;
+                        $triggersSuspended = $triggersSuspended || $this->suspender->suspendsTriggers($connection);
                     }
                 }
             }
@@ -214,7 +216,7 @@ final class SanitizationRunner
             $this->restoreForeignKeys($restores);
         }
 
-        return new RunReport($reports, $options->dryRun, $foreignKeysSuspended);
+        return new RunReport($reports, $options->dryRun, $foreignKeysSuspended, $triggersSuspended);
     }
 
     /**

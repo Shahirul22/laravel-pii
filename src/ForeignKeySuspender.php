@@ -64,6 +64,15 @@ class ForeignKeySuspender
         };
     }
 
+    /**
+     * Whether suspending enforcement on this connection also stops ordinary triggers: on PostgreSQL
+     * session_replication_role = 'replica' does, while the MySQL and SQLite settings stop only foreign keys.
+     */
+    public function suspendsTriggers(Connection $connection): bool
+    {
+        return $connection->getDriverName() === 'pgsql';
+    }
+
     private function assertSqliteSuspendable(Connection $connection): void
     {
         if ($connection->transactionLevel() === 0) {

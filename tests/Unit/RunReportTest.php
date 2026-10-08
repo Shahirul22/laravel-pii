@@ -214,3 +214,9 @@ it('reports foreignKeysSuspended when passed positionally', function () {
     expect($report->foreignKeysSuspended)->toBeTrue();
     expect($report->toArray()['foreignKeysSuspended'])->toBeTrue();
 });
+
+it('defaults triggersSuspended to false and keeps the positional constructions', function () {
+    expect((new RunReport(models: [], dryRun: false))->triggersSuspended)->toBeFalse();
+    expect((new RunReport([], false, true))->triggersSuspended)->toBeFalse();
+    expect((new RunReport([], false, true, true))->triggersSuspended)->toBeTrue();
+});

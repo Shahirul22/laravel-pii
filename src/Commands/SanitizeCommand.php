@@ -95,7 +95,9 @@ class SanitizeCommand extends Command
         $this->newLine(2);
 
         if ($report->foreignKeysSuspended) {
-            $this->line('Foreign-key enforcement was suspended for this run because opted-in referenced columns were rewritten.');
+            $this->line($report->triggersSuspended
+                ? 'Foreign-key enforcement and ordinary triggers were suspended for this run because opted-in referenced columns were rewritten.'
+                : 'Foreign-key enforcement was suspended for this run because opted-in referenced columns were rewritten.');
         }
 
         if ($report->failed()) {

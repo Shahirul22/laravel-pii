@@ -742,6 +742,42 @@ namespace {
             ->assertExitCode(0);
     });
 
+    it('names ordinary triggers in the suspension notice on PostgreSQL only', function () {
+        app()->instance(ForeignKeySuspender::class, new class extends ForeignKeySuspender
+        {
+            public function suspendsTriggers(Connection $connection): bool
+            {
+                return true;
+            }
+        });
+
+        refEnforce();
+        refConfigure(refHappyMap());
+
+        $this->artisan('pii:sanitize')
+            ->expectsOutputToContain('Foreign-key enforcement and ordinary triggers were suspended for this run because opted-in referenced columns were rewritten.')
+            ->doesntExpectOutputToContain('Foreign-key enforcement was suspended for this run')
+            ->assertExitCode(0);
+    });
+
+    it('keeps the foreign-key-only notice when the driver does not suspend triggers', function () {
+        app()->instance(ForeignKeySuspender::class, new class extends ForeignKeySuspender
+        {
+            public function suspendsTriggers(Connection $connection): bool
+            {
+                return false;
+            }
+        });
+
+        refEnforce();
+        refConfigure(refHappyMap());
+
+        $this->artisan('pii:sanitize')
+            ->expectsOutputToContain('Foreign-key enforcement was suspended for this run because opted-in referenced columns were rewritten.')
+            ->doesntExpectOutputToContain('ordinary triggers')
+            ->assertExitCode(0);
+    });
+
     it('prints the notice and the warning on a failing run', function () {
         refEnforce();
         refConfigure(refHappyMap() + [RefNote::class => RefNoteSanitizer::class]);

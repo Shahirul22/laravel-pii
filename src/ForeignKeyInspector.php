@@ -90,7 +90,8 @@ final class ForeignKeyInspector
     }
 
     /**
-     * v1 semantics, same-table references skipped (see ensureInboundIndex()).
+     * Every column referenced by a foreign key in the connection's schema, mapped to a referencing table;
+     * a self-referencing key counts, so the referencing table can be $table itself.
      *
      * @return array<string, string>
      */
@@ -244,10 +245,6 @@ final class ForeignKeyInspector
 
             foreach ($foreignKeys as $entry) {
                 $targetShort = $this->canonicalTableName($connection, $entry['foreign_table']);
-
-                if ($targetShort === $physicalShort) {
-                    continue;
-                }
 
                 foreach ($entry['foreign_columns'] as $column) {
                     $this->inboundIndex[$connectionKey][$targetShort][$column] = $physicalShort;

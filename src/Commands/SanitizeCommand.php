@@ -129,19 +129,51 @@ class SanitizeCommand extends Command
      * "Array" that a bare (string) cast on an array would otherwise emit —
      * see docs/design/engine-hardening/spec §R7 Reporting.
      */
-    private function formatKey(mixed $key): string
+    /**
+     * The failed chunk's first and last identity as "keys A–B", or null when
+     * the identity may hold row data. The identity can be a natural key, such
+     * as an email or an ID number, and the failure summary can end up in a CI
+     * log, so only integers and UUID/ULID-shaped strings are printed.
+     */
+    private function formatKeyRange(mixed $first, mixed $last): ?string
+    {
+        $from = $this->printableKey($first);
+        $to = $this->printableKey($last);
+
+        if ($from === null || $to === null) {
+            return null;
+        }
+
+        return sprintf('keys %s–%s', $from, $to);
+    }
+
+    private function printableKey(mixed $key): ?string
     {
         if (is_array($key)) {
             $parts = [];
 
             foreach ($key as $column => $value) {
-                $parts[] = $column.'='.(is_scalar($value) || $value === null ? (string) $value : get_debug_type($value));
+                $printable = $this->printableKey($value);
+
+                if ($printable === null) {
+                    return null;
+                }
+
+                $parts[] = $column.'='.$printable;
             }
 
             return implode(', ', $parts);
         }
 
-        return $key === null ? '' : (string) $key;
+        if (is_int($key)) {
+            return (string) $key;
+        }
+
+        if (is_string($key) && preg_match('/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$/i', $key) === 1) {
+            return $key;
+        }
+
+        return null;
     }
 
     /**
@@ -276,13 +308,25 @@ class SanitizeCommand extends Command
         }
 
         if ($failingChunk instanceof ChunkReport) {
+            $range = $this->formatKeyRange($failingChunk->firstKey, $failingChunk->lastKey);
+
             $this->line(sprintf(
-                '  Chunk #%d failed (keys %s–%s):',
+                '  Chunk #%d failed (%s):',
                 $failingChunk->index,
-                $this->formatKey($failingChunk->firstKey),
-                $this->formatKey($failingChunk->lastKey)
+                $range ?? 'identity values withheld'
             ));
-            $this->line(sprintf('    %s: %s', $failingChunk->failureClass, $failingChunk->failureMessage));
+
+            // The withheld failure messages already start with the exception
+            // class, so only a message that does not start with it gets the
+            // class as a prefix.
+            $message = (string) $failingChunk->failureMessage;
+
+            $this->line(sprintf(
+                '    %s',
+                str_starts_with($message, (string) $failingChunk->failureClass)
+                    ? $message
+                    : $failingChunk->failureClass.': '.$message
+            ));
         }
 
         $this->components->twoColumnDetail('Rows sanitized:', number_format($failing->rowsSanitized()));

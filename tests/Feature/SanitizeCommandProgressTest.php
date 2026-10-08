@@ -53,6 +53,35 @@ namespace {
         }
     }
 
+    class CmdProgressNaturalUser extends Model
+    {
+        protected $table = 'cmd_progress_natural_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class CmdProgressNaturalUserSanitizer extends Sanitizer
+    {
+        public static int $seen = 0;
+
+        public function fields(): array
+        {
+            return [
+                'name' => function ($value, $faker, $row) {
+                    self::$seen++;
+
+                    if (self::$seen === 3) {
+                        throw new RuntimeException('boom');
+                    }
+
+                    return $faker->name();
+                },
+            ];
+        }
+    }
+
     class CmdProgressUnsanitizedUser extends Model
     {
         protected $table = 'cmd_progress_unsanitized_users';
@@ -72,6 +101,7 @@ namespace {
     use Shahirul22\LaravelPiiSanitizer\ProgressEvent;
     use Shahirul22\LaravelPiiSanitizer\RunOptions;
     use Shahirul22\LaravelPiiSanitizer\SanitizationRunner;
+    use Symfony\Component\Console\Output\BufferedOutput;
 
     beforeEach(function () {
         CmdProgressFailingUserSanitizer::$seen = 0;
@@ -111,6 +141,22 @@ namespace {
         app()->detectEnvironment(fn () => 'testing');
     });
 
+    /**
+     * Run the command and return its real console output. The mocked
+     * output of `$this->artisan()` does not see every line, so assertions
+     * about what is printed read a buffer instead.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    function cmdProgressRun(array $options, int $expectedExit): string
+    {
+        $buffer = new BufferedOutput;
+
+        expect(Artisan::call('pii:sanitize', $options, $buffer))->toBe($expectedExit);
+
+        return $buffer->fetch();
+    }
+
     it('emits progress output across a multi-chunk run', function () {
         $this->artisan('pii:sanitize', ['--chunk' => 5])
             ->assertExitCode(0)
@@ -147,6 +193,43 @@ namespace {
 
         $output = Artisan::output();
         expect($output)->not->toContain('boom');
+    });
+
+    it('names the exception class once in the failure line', function () {
+        config()->set('pii.models', [CmdProgressFailingUser::class]);
+
+        $output = cmdProgressRun(['--chunk' => 10], 1);
+
+        expect($output)->toContain('RuntimeException: the chunk failed');
+        expect($output)->not->toContain('RuntimeException: RuntimeException');
+    });
+
+    it('shows the key range of a failed chunk for a numeric identity', function () {
+        config()->set('pii.models', [CmdProgressFailingUser::class]);
+
+        expect(cmdProgressRun(['--chunk' => 10], 1))->toContain('Chunk #2 failed (keys 11–20)');
+    });
+
+    it('withholds the identity of a failed chunk when it is a natural key', function () {
+        CmdProgressNaturalUserSanitizer::$seen = 0;
+
+        Schema::create('cmd_progress_natural_users', function ($table) {
+            $table->string('email')->unique();
+            $table->string('name');
+        });
+
+        for ($i = 0; $i < 6; $i++) {
+            DB::table('cmd_progress_natural_users')->insert(['email' => "natural-{$i}@example.com", 'name' => "Seed {$i}"]);
+        }
+
+        config()->set('pii.sanitizers', [CmdProgressNaturalUser::class => CmdProgressNaturalUserSanitizer::class]);
+        config()->set('pii.models', [CmdProgressNaturalUser::class]);
+
+        $output = cmdProgressRun(['--chunk' => 2], 1);
+
+        expect($output)->toContain('Chunk #2 failed (identity values withheld)');
+        expect($output)->not->toContain('natural-');
+        expect($output)->not->toContain('@example.com');
     });
 
     it('names an unattempted model explicitly in the failure summary', function () {

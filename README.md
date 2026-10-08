@@ -267,12 +267,14 @@ A progress bar is rendered per model while chunks are processed, one line per mo
 
 ### When a run fails
 
-Each chunk is written in its own transaction. When a chunk fails, the package rolls that chunk back, stops the run and exits with code `1`. Chunks that finished earlier stay written, and later chunks and models are not attempted. The command names the model, the chunk number and the first and last key of the failed chunk, then the reason:
+Each chunk is written in its own transaction. When a chunk fails, the package rolls that chunk back, stops the run and exits with code `1`. Chunks that finished earlier stay written, and later chunks and models are not attempted. The command names the model, the chunk number and, when the identity is safe to print, the first and last key of the failed chunk, then the reason:
 
 ```text
   Chunk #1 failed (keys 1–2):
-    RuntimeException: RuntimeException: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.
+    RuntimeException: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.
 ```
+
+The key range is printed only for an integer identity or a UUID or ULID identity. An identity can be a natural key, such as an email address or an ID number, and the failure summary can end up in a CI log. For any other identity the line reads `Chunk #1 failed (identity values withheld):` and shows no value.
 
 When the reason is one of the package's own exceptions, such as a constraint or uniqueness error, its message is printed in full, because it holds only model, table and column names. Any other exception can hold row values, so its message is withheld and only its class is kept. There are two such messages. The class name is printed first (the class names below are examples):
 
@@ -281,7 +283,7 @@ Illuminate\Database\QueryException: the database refused the chunk write. Its or
 RuntimeException: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.
 ```
 
-The first is for an exception from the database, the second for any other exception, such as one thrown by your own closure. The withheld message is not written to a log either. To see the cause, run the failing model on its own with `--model` (this does not work for a `pii.tables` target, which `--model` skips), then reproduce one row of the failed chunk in `php artisan tinker`: load a row from the key range that the command printed, call your value definition on it, or run the same update by hand. A `--dry-run` also calls your value definitions, so it shows an exception from a closure, but it never writes, so it does not show a refusal from the database.
+The first is for an exception from the database, the second for any other exception, such as one thrown by your own closure. The withheld message is not written to a log either. To see the cause, run the failing model on its own with `--model` (this does not work for a `pii.tables` target, which `--model` skips), then reproduce one row of the failed chunk in `php artisan tinker`: load a row from the key range that the command printed (or, when the identity values are withheld, any row of that chunk), call your value definition on it, or run the same update by hand. A `--dry-run` also calls your value definitions, so it shows an exception from a closure, but it never writes, so it does not show a refusal from the database.
 
 ## Value definition forms
 

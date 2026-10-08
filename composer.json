@@ -19,6 +19,9 @@
     ],
     "require": {
         "php": "^8.2",
+        "ext-hash": "*",
+        "ext-mbstring": "*",
+        "ext-random": "*",
         "illuminate/support": "^11.0 || ^12.0 || ^13.0",
         "illuminate/database": "^11.0 || ^12.0 || ^13.0",
         "illuminate/console": "^11.0 || ^12.0 || ^13.0",
@@ -42,7 +45,20 @@
         }
     },
     "scripts": {
-        "test": "vendor/bin/pest"
+        "analyse": "vendor/bin/phpstan analyse --no-progress",
+        "lint": "vendor/bin/pint --test",
+        "pest": "vendor/bin/pest",
+        "test": [
+            "@analyse",
+            "@lint",
+            "@pest"
+        ]
+    },
+    "scripts-descriptions": {
+        "analyse": "Run larastan at level 5.",
+        "lint": "Check code style with Pint, without changing files.",
+        "pest": "Run the Pest test suite. Extra arguments reach Pest, for example: composer pest -- --filter Keyed",
+        "test": "Run the full validity suite: larastan level 5, then Pint, then Pest."
     },
     "extra": {
         "laravel": {

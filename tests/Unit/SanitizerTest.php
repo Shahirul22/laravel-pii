@@ -118,3 +118,7 @@ it('lets a sanitizer declare categorical columns', function () {
 
     expect($sanitizer->categorical())->toBe(['status']);
 });
+
+it('defaults mirrors() to an empty map', function () {
+    expect((new FakeSanitizer)->mirrors())->toBe([]);
+});

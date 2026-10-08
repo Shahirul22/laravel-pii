@@ -23,7 +23,9 @@ use Shahirul22\LaravelPiiSanitizer\Values\KeyedValueRegistry;
  * replacement values inside a single transaction, and never throws for a
  * mid-chunk failure — see docs/design/execution-engine-and-safety/execution-engine-spec,
  * docs/design/engine-hardening/spec §R7 and, for Keyed registration,
- * docs/design/value-generation-primitives/spec §R1.2.
+ * docs/design/value-generation-primitives/spec §R1.2, and for mirror groups
+ * and the run-scoped foreign-key suspension around the targets loop
+ * docs/design/referenced-identifier-structured-column-sanitization/spec.
  */
 final class SanitizationRunner
 {
@@ -38,6 +40,8 @@ final class SanitizationRunner
         private readonly ConstraintValidator $validator,
         private readonly PagingKeyResolver $pagingKeys,
         private readonly KeyedValueRegistry $keyed,
+        private readonly ReferencedColumnGuard $referenced,
+        private readonly ForeignKeySuspender $suspender,
     ) {}
 
     /** Walks every configured target; never throws for a mid-chunk failure. */
@@ -123,6 +127,12 @@ final class SanitizationRunner
             ];
         }
 
+        // Run-level mirror-group checks (R1.4, R1.5; spec "Boot-time checks"
+        // 4 to 7): before Keyed originals seeding and paging probes, so an
+        // invalid opt-in fails before any data query. Returns the connections
+        // whose FK enforcement must be suspended for this run.
+        $suspendConnections = $this->referenced->assertGroups($targets);
+
         // Classification runs once per target, here in the registration
         // pass, because it depends only on the target's model and column
         // names (design §R5) — never per row. The paging identity is also
@@ -167,27 +177,68 @@ final class SanitizationRunner
         }
 
         $reports = [];
+        $restores = [];
+        $foreignKeysSuspended = false;
 
-        foreach ($targets as $target) {
-            $label = $target['label'];
+        try {
+            if (! $options->dryRun) {
+                foreach ($suspendConnections as $connection) {
+                    $restore = $this->suspender->suspend($connection);
 
-            $modelReport = $this->runModel(
-                $label,
-                $target['model'],
-                $target['sanitizer'],
-                $castColumns[$label],
-                $columnConstraints[$label],
-                $pagingKeyByLabel[$label],
-                $options
-            );
-            $reports[] = $modelReport;
+                    if ($restore !== null) {
+                        $restores[] = $restore;
+                        $foreignKeysSuspended = true;
+                    }
+                }
+            }
 
-            if ($modelReport->failed()) {
-                break;
+            foreach ($targets as $target) {
+                $label = $target['label'];
+
+                $modelReport = $this->runModel(
+                    $label,
+                    $target['model'],
+                    $target['sanitizer'],
+                    $castColumns[$label],
+                    $columnConstraints[$label],
+                    $pagingKeyByLabel[$label],
+                    $options
+                );
+                $reports[] = $modelReport;
+
+                if ($modelReport->failed()) {
+                    break;
+                }
+            }
+        } finally {
+            $this->restoreForeignKeys($restores);
+        }
+
+        return new RunReport($reports, $options->dryRun, $foreignKeysSuspended);
+    }
+
+    /**
+     * Restores every suspended connection in reverse order. Every restore is
+     * attempted; the first failure is re-thrown afterwards, never swallowed
+     * (PHP chains any in-flight exception as its previous).
+     *
+     * @param  list<\Closure(): void>  $restores
+     */
+    private function restoreForeignKeys(array $restores): void
+    {
+        $failure = null;
+
+        foreach (array_reverse($restores) as $restore) {
+            try {
+                $restore();
+            } catch (\Throwable $e) {
+                $failure ??= $e;
             }
         }
 
-        return new RunReport($reports, $options->dryRun);
+        if ($failure !== null) {
+            throw $failure;
+        }
     }
 
     /**

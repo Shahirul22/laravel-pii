@@ -200,3 +200,17 @@ it('serialises to an array carrying the completed and not-completed accounting',
     expect($array['models'][0]['rowsSanitized'])->toBe(10);
     expect($array['models'][0]['chunksNotAttempted'])->toBe(0);
 });
+
+it('defaults foreignKeysSuspended to false', function () {
+    $report = new RunReport(models: [], dryRun: false);
+
+    expect($report->foreignKeysSuspended)->toBeFalse();
+    expect($report->toArray()['foreignKeysSuspended'])->toBeFalse();
+});
+
+it('reports foreignKeysSuspended when passed positionally', function () {
+    $report = new RunReport([], false, true);
+
+    expect($report->foreignKeysSuspended)->toBeTrue();
+    expect($report->toArray()['foreignKeysSuspended'])->toBeTrue();
+});

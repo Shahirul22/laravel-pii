@@ -3,6 +3,7 @@
 namespace {
     use Illuminate\Database\Eloquent\Model;
     use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+    use Shahirul22\LaravelPiiSanitizer\Values\Json;
     use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
     class KrUser extends Model
@@ -43,6 +44,42 @@ namespace {
         public function fields(): array
         {
             return ['alias' => 'safeEmail'];
+        }
+    }
+
+    class KrPathSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['alias' => Json::paths([
+                'a->b' => Keyed::pattern('alias', '???'),
+                'c' => 'safeEmail',
+                '0' => Keyed::pattern('alias', '???'),
+            ])];
+        }
+    }
+
+    class KrPathOnUniqueSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['code' => Json::paths(['x' => Keyed::pattern('pathonly', '???')])];
+        }
+    }
+
+    class KrPathMismatchSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['alias' => Json::paths(['p' => Keyed::pattern('code', '####')])];
+        }
+    }
+
+    class KrPathPlainSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['alias' => Json::paths(['p' => 'safeEmail'])];
         }
     }
 }
@@ -131,5 +168,73 @@ namespace {
         expect($registry->assigned('code', $digest))->toBeNull();
         expect($registry->isUniqueBound('code'))->toBeFalse();
         expect($registry->isAvailable('code', 'ab1'))->toBeTrue();
+    });
+
+    it('records a flat binding with a null path', function () {
+        $registry = app(KeyedValueRegistry::class);
+        $registry->register(new KrUser, new KrUniqueSanitizer);
+
+        expect($registry->bindings('code'))->toBe([
+            ['connection' => null, 'table' => 'kr_users', 'column' => 'code', 'path' => null, 'unique' => true],
+        ]);
+    });
+
+    it('records a Keyed path as a non-unique binding with the path string, in declaration order', function () {
+        $registry = app(KeyedValueRegistry::class);
+        $registry->register(new KrUser, new KrPathSanitizer);
+
+        expect($registry->bindings('alias'))->toBe([
+            ['connection' => null, 'table' => 'kr_users', 'column' => 'alias', 'path' => 'a->b', 'unique' => false],
+            ['connection' => null, 'table' => 'kr_users', 'column' => 'alias', 'path' => '0', 'unique' => false],
+        ]);
+    });
+
+    it('never makes a namespace unique-bound or seeds originals from a path binding', function () {
+        $registry = app(KeyedValueRegistry::class);
+        $registry->register(new KrUser, new KrPathOnUniqueSanitizer);
+
+        expect($registry->isUniqueBound('pathonly'))->toBeFalse();
+        expect($registry->isAvailable('pathonly', 'ab1'))->toBeTrue();
+    });
+
+    it('rejects a path whose shape differs from a flat column in the same namespace', function () {
+        $registry = app(KeyedValueRegistry::class);
+        $registry->register(new KrUser, new KrUniqueSanitizer);
+
+        try {
+            $registry->register(new KrUser, new KrPathMismatchSanitizer);
+
+            test()->fail('Expected InvalidConfigurationException to be thrown.');
+        } catch (InvalidConfigurationException $exception) {
+            expect($exception->getMessage())->toContain('"code"');
+        }
+    });
+
+    it('requires the key when the only Keyed value sits inside a path', function () {
+        config()->set('pii.keyed.key', null);
+        $registry = app(KeyedValueRegistry::class);
+
+        expect(fn () => $registry->register(new KrUser, new KrPathSanitizer))
+            ->toThrow(InvalidConfigurationException::class, 'PII_SANITIZER_KEY');
+    });
+
+    it('requires no key and records no binding for a path map without Keyed values', function () {
+        config()->set('pii.keyed.key', null);
+        $registry = app(KeyedValueRegistry::class);
+
+        $registry->register(new KrUser, new KrPathPlainSanitizer);
+
+        expect($registry->bindings('alias'))->toBe([]);
+    });
+
+    it('returns no bindings for an unknown namespace and clears them on reset()', function () {
+        $registry = app(KeyedValueRegistry::class);
+
+        expect($registry->bindings('never-seen'))->toBe([]);
+
+        $registry->register(new KrUser, new KrPathSanitizer);
+        $registry->reset();
+
+        expect($registry->bindings('alias'))->toBe([]);
     });
 }

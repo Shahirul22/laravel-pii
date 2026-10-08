@@ -14,6 +14,9 @@ abstract class Sanitizer
      *  - a static value (any scalar, array, enum, null)
      *  - a Closure: fn(mixed $value, \Faker\Generator $faker, Model $row): mixed
      *  - a ValueGenerator instance, e.g. Keyed::…, Format::…, Malaysia::…
+     *  - Json::paths([...]) — a ValueGenerator instance that rewrites only the
+     *    declared paths ("a->b", "list->0", "items->*->name") inside a JSON or
+     *    array-cast column, keyed by the physical column name
      *  - a class-string implementing ValueGenerator
      *  - a Faker method-name string (e.g. 'email', 'name')
      *
@@ -43,6 +46,19 @@ abstract class Sanitizer
      * @return list<string>
      */
     public function pagingKey(): array
+    {
+        return [];
+    }
+
+    /**
+     * Per-column opt-in (R1.3) for a column that v1 rejects because it is a
+     * foreign key, is referenced by a foreign key, or is a primary key.
+     * Map of column => mirror columns that hold the same value, each written
+     * as "table.column". Declaring an entry is the opt-in.
+     *
+     * @return array<string, list<string>>
+     */
+    public function mirrors(): array
     {
         return [];
     }

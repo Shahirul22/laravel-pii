@@ -3,6 +3,7 @@
 namespace {
     use Illuminate\Database\Eloquent\Model;
     use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+    use Shahirul22\LaravelPiiSanitizer\Values\Json;
     use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
     class DqGuardUser extends Model
@@ -71,6 +72,19 @@ namespace {
         public function categorical(): array
         {
             return ['status'];
+        }
+    }
+
+    class DqGuardJsonPathsCategoricalSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['prefs' => Json::paths(['contact->phone' => 'X'])];
+        }
+
+        public function categorical(): array
+        {
+            return ['prefs'];
         }
     }
 
@@ -208,5 +222,20 @@ namespace {
             expect($exception->getMessage())->toContain('uses a Keyed value-definition');
             expect($exception->getMessage())->toContain('status');
         }
+    });
+
+    it('rejects a Json::paths() column that is also categorical, before any query', function () {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        try {
+            dqGuard()->assertValid(new DqGuardJsonPathsCategoricalSanitizer, DqGuardUser::class);
+
+            test()->fail('Expected InvalidCategoricalColumnException to be thrown.');
+        } catch (InvalidCategoricalColumnException $exception) {
+            expect($exception->getMessage())->toBe('[laravel-pii-sanitizer] DqGuardUser::$prefs uses a Json::paths() definition and is listed in DqGuardJsonPathsCategoricalSanitizer::categorical(). Sampling would replace the whole document with another row\'s value, so remove it from categorical().');
+        }
+
+        expect(DB::getQueryLog())->toBe([]);
     });
 }

@@ -16,6 +16,12 @@ use Shahirul22\LaravelPiiSanitizer\Exceptions\UnpageableTableException;
  * design's stability proof rests on: an identity value can never be
  * rewritten by this run's own writes, so keyset paging on it visits every
  * row exactly once regardless of in-place mutation elsewhere in the row.
+ *
+ * Sources 1 and model-key are disjoint from fields() too
+ * (docs/design/referenced-identifier-structured-column-sanitization/spec,
+ * "Primary-key and paging-identity columns"): SchemaGuard rejects a primary-key
+ * column in fields() unless it is opted in through Sanitizer::mirrors(), and an
+ * opted-in primary key is then paged on another identity or fails at boot.
  */
 final class PagingKeyResolver
 {
@@ -35,7 +41,7 @@ final class PagingKeyResolver
         // own declared key name when it is present in the table's columns.
         $pk = $this->unique->primaryKey($table, $conn);
 
-        if ($pk !== null && $pk !== []) {
+        if ($pk !== null && $pk !== [] && array_intersect($pk, $fields) === []) {
             return new PagingKey($pk, 'primary');
         }
 
@@ -46,7 +52,7 @@ final class PagingKeyResolver
         // null — design §R7 Model-less table target), so it can genuinely
         // be null at runtime despite the declared type.
         // @phpstan-ignore function.alreadyNarrowedType (getKeyName() can be null for a TableRow with $primaryKey = null, despite its string PHPDoc)
-        if (is_string($keyName) && $keyName !== '' && isset($schema[$keyName])) {
+        if (is_string($keyName) && $keyName !== '' && isset($schema[$keyName]) && ! in_array($keyName, $fields, true)) {
             return new PagingKey([$keyName], 'model-key');
         }
 
@@ -103,6 +109,19 @@ final class PagingKeyResolver
 
         if ($fallback !== [] && $this->isProvenUnique($target, $fallback)) {
             return new PagingKey($fallback, 'fallback');
+        }
+
+        $pkColumns = $pk ?? [];
+
+        // @phpstan-ignore function.alreadyNarrowedType (getKeyName() can be null for a TableRow with $primaryKey = null, despite its string PHPDoc)
+        if (is_string($keyName) && $keyName !== '' && isset($schema[$keyName]) && ! in_array($keyName, $pkColumns, true)) {
+            $pkColumns[] = $keyName;
+        }
+
+        $optedIn = array_values(array_intersect($pkColumns, $fields));
+
+        if ($optedIn !== []) {
+            throw UnpageableTableException::optedInPrimaryKey($target::class, $table, $sanitizer::class, $optedIn[0]);
         }
 
         throw UnpageableTableException::noStableIdentity($target::class, $table, $sanitizer::class);

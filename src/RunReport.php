@@ -10,6 +10,7 @@ final class RunReport
     public function __construct(
         public readonly array $models,
         public readonly bool $dryRun,
+        public readonly bool $foreignKeysSuspended = false,
     ) {}
 
     public function failed(): bool
@@ -36,6 +37,7 @@ final class RunReport
     {
         return [
             'dryRun' => $this->dryRun,
+            'foreignKeysSuspended' => $this->foreignKeysSuspended,
             'models' => array_map(fn (ModelReport $model): array => $model->toArray(), $this->models),
         ];
     }

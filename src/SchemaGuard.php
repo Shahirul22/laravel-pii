@@ -10,41 +10,17 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\ConstraintViolationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
+use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
+use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
 class SchemaGuard implements SchemaGuardContract
 {
-    /** Every cache below is keyed by "<connection-name>.<canonical-table>" so a second connection's schema never poisons or is masked by the first's. */
-
-    /** @var array<string, list<string>> */
+    /**
+     * Keyed by "<connection-name>.<canonical-table>" so a second connection's schema never poisons or is masked by the first's.
+     *
+     * @var array<string, list<string>>
+     */
     private array $columnCache = [];
-
-    /** @var array<string, list<string>> */
-    private array $outboundCache = [];
-
-    /** @var array<string, array<string, string>> */
-    private array $outboundTargets = [];
-
-    /**
-     * Raw getForeignKeys() results keyed by cache key, shared between the
-     * outbound-FK lookup and the inbound-FK global sweep so a table's
-     * foreign keys are fetched from the schema at most once.
-     *
-     * @var array<string, list<array{name: string|null, columns: list<string>, foreign_schema: string|null, foreign_table: string, foreign_columns: list<string>, on_update: string, on_delete: string}>>
-     */
-    private array $foreignKeysCache = [];
-
-    /**
-     * Per-connection index of inbound references: connection name => target
-     * short table name => column => referencing physical table name. Built
-     * lazily, at most once per connection, by sweeping every table in that
-     * connection's schema a single time.
-     *
-     * @var array<string, array<string, array<string, string>>>
-     */
-    private array $inboundIndex = [];
-
-    /** @var array<string, true> */
-    private array $inboundIndexBuilt = [];
 
     public function __construct(
         private readonly DatabaseManager $db,
@@ -54,6 +30,7 @@ class SchemaGuard implements SchemaGuardContract
         private readonly CastAwareEncoder $encoder,
         private readonly Generator $faker,
         private readonly UniqueColumnInspector $uniqueInspector,
+        private readonly ForeignKeyInspector $foreignKeys,
     ) {}
 
     /**
@@ -70,7 +47,18 @@ class SchemaGuard implements SchemaGuardContract
             throw InvalidConfigurationException::invalidModelClass($modelClass);
         }
 
-        $columns = array_keys($sanitizer->fields());
+        $fields = $sanitizer->fields();
+        $mirrors = $sanitizer->mirrors();
+
+        $this->assertMirrorDeclarations($sanitizer, $instance, $modelClass, $fields, $mirrors);
+
+        // R1.3: the FK, inbound-FK and primary-key rejections below are
+        // skipped only for columns this sanitizer itself lists in mirrors().
+        // With mirrors() empty, in_array() is always false and every check
+        // runs exactly as in v1 (R1.5).
+        $optedIn = array_keys($mirrors);
+
+        $columns = array_keys($fields);
 
         if ($columns === []) {
             return;
@@ -87,24 +75,31 @@ class SchemaGuard implements SchemaGuardContract
             }
         }
 
-        $outbound = $this->outboundForeignKeyColumns($connection, $table);
-        $cacheKey = $this->cacheKey($connection, $table);
+        $outbound = $this->foreignKeys->outboundForeignKeyColumns($connection, $table);
 
         foreach ($columns as $column) {
+            if (in_array($column, $optedIn, true)) {
+                continue;
+            }
+
             if (in_array($column, $outbound, true)) {
                 throw UnsafeColumnException::outboundForeignKey(
                     $modelClass,
                     $column,
                     $sanitizer::class,
                     $table,
-                    $this->outboundTargets[$cacheKey][$column]
+                    $this->foreignKeys->outboundTarget($connection, $table, $column)
                 );
             }
         }
 
-        $inbound = $this->inboundReferencedColumns($connection, $table);
+        $inbound = $this->foreignKeys->inboundReferencedColumns($connection, $table);
 
         foreach ($columns as $column) {
+            if (in_array($column, $optedIn, true)) {
+                continue;
+            }
+
             if (array_key_exists($column, $inbound)) {
                 throw UnsafeColumnException::inboundReference(
                     $modelClass,
@@ -125,6 +120,8 @@ class SchemaGuard implements SchemaGuardContract
         // column of a multi-column primary key is protected, not only the
         // first, and a model-declared key name not present in the schema PK
         // (e.g. a TableRow's null key name) is included too when non-empty.
+        // An opted-in primary-key column is skipped here: it is paged on a
+        // disjoint identity instead (PagingKeyResolver).
         $protected = $this->uniqueInspector->primaryKey($table, $instance->getConnectionName()) ?? [];
 
         $modelKeyName = $instance->getKeyName();
@@ -139,12 +136,131 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         foreach ($columns as $column) {
+            if (in_array($column, $optedIn, true)) {
+                continue;
+            }
+
             if (in_array($column, $protected, true)) {
                 throw UnsafeColumnException::primaryKey($modelClass, $column, $sanitizer::class, $table);
             }
         }
 
+        $this->assertJsonPathsDeclarable($sanitizer, $instance, $modelClass, $table, $fields);
+
         $this->assertStaticValuesWritable($sanitizer, $instance, $modelClass, $table, $columns);
+    }
+
+    /**
+     * Per-target mirror checks 1 and 2 (docs/design/referenced-identifier-structured-column-sanitization/spec, Boot-time checks). Pure: reads declarations only.
+     *
+     * @param  array<string, mixed>  $fields
+     * @param  array<string, list<string>>  $mirrors
+     *
+     * @throws InvalidConfigurationException
+     */
+    private function assertMirrorDeclarations(Sanitizer $sanitizer, Model $instance, string $modelClass, array $fields, array $mirrors): void
+    {
+        if ($mirrors === []) {
+            return;
+        }
+
+        foreach ($mirrors as $column => $list) {
+            if (! array_key_exists($column, $fields)) {
+                throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the column is not declared in fields()');
+            }
+
+            if ($list === []) {
+                throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the mirror list is empty');
+            }
+
+            foreach ($list as $entry) {
+                $dot = strrpos($entry, '.');
+
+                if ($dot === false || $dot === 0 || $dot === strlen($entry) - 1) {
+                    throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, "mirror \"{$entry}\" is not of the form table.column");
+                }
+
+                if ($entry === $instance->getTable().'.'.$column) {
+                    throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, "mirror \"{$entry}\" names the column itself");
+                }
+            }
+        }
+
+        foreach (array_keys($mirrors) as $column) {
+            if (! $fields[$column] instanceof Keyed) {
+                throw InvalidConfigurationException::mirroredColumnNotKeyed($modelClass, $column, $sanitizer::class);
+            }
+        }
+    }
+
+    /**
+     * R2 boot check (docs/design/referenced-identifier-structured-column-sanitization/spec, "Boot check SchemaGuard::assertJsonPathsDeclarable()"):
+     * a Json::paths() column has no get/set mutator, no cast or an allow-listed array cast, and a json or string column family.
+     * Every static inner definition must also be JSON-writable (spec "Boot rules for path definitions").
+     *
+     * @param  array<string, mixed>  $fields
+     *
+     * @throws InvalidConfigurationException
+     */
+    private function assertJsonPathsDeclarable(Sanitizer $sanitizer, Model $instance, string $modelClass, string $table, array $fields): void
+    {
+        $columns = array_keys(array_filter($fields, fn (mixed $definition): bool => $definition instanceof JsonPaths));
+
+        // No path map: return before any schema query so a flat-only target's query sequence is unchanged (AC-13).
+        if ($columns === []) {
+            return;
+        }
+
+        $map = $this->constraints->constraintsFor($table, $instance->getConnectionName());
+
+        foreach ($columns as $column) {
+            $reason = $this->jsonPathsRejection($instance, $column, $map);
+
+            if ($reason !== null) {
+                throw InvalidConfigurationException::jsonPathsUnsupportedColumn($modelClass, $column, $sanitizer::class, $table, $reason);
+            }
+
+            $pathMap = $fields[$column];
+            assert($pathMap instanceof JsonPaths);
+
+            foreach ($pathMap->definitions() as $path => $definition) {
+                if (! $this->definitions->isStatic($definition, $this->faker)) {
+                    continue;
+                }
+
+                $type = JsonPaths::unwritableType($definition);
+
+                if ($type !== null) {
+                    throw InvalidConfigurationException::jsonPathStaticValueNotWritable($modelClass, $column, (string) $path, $sanitizer::class, $type);
+                }
+            }
+        }
+    }
+
+    /**
+     * Why a path map cannot be declared on $column, or null when it can.
+     *
+     * @param  array<string, ColumnConstraints>  $map
+     */
+    private function jsonPathsRejection(Model $instance, string $column, array $map): ?string
+    {
+        if ($instance->hasGetMutator($column) || $instance->hasAttributeGetMutator($column) || $instance->hasSetMutator($column) || $instance->hasAttributeSetMutator($column)) {
+            return 'it has a get or set mutator';
+        }
+
+        if ($instance->hasCast($column) && ! $instance->hasCast($column, ['array', 'json', 'json:unicode', 'encrypted:array', 'encrypted:json'])) {
+            $cast = $instance->getCasts()[$column];
+
+            return 'its cast "'.(is_string($cast) ? $cast : get_debug_type($cast)).'" is not one of: none, array, json, json:unicode, encrypted:array, encrypted:json';
+        }
+
+        $family = isset($map[$column]) ? $map[$column]->family : 'other';
+
+        if (! in_array($family, ['json', 'string'], true)) {
+            return "its column type family is \"{$family}\", not json or string";
+        }
+
+        return null;
     }
 
     /**
@@ -206,137 +322,8 @@ class SchemaGuard implements SchemaGuardContract
         return $this->columnCache[$cacheKey] = array_column($columns, 'name');
     }
 
-    /**
-     * @return list<string>
-     */
-    private function outboundForeignKeyColumns(Connection $connection, string $table): array
-    {
-        $cacheKey = $this->cacheKey($connection, $table);
-
-        if (isset($this->outboundCache[$cacheKey])) {
-            return $this->outboundCache[$cacheKey];
-        }
-
-        $canonical = $this->canonicalTableName($connection, $table);
-
-        $foreignKeys = $this->rawForeignKeys($connection, $canonical);
-
-        $columns = [];
-
-        foreach ($foreignKeys as $entry) {
-            foreach ($entry['columns'] as $column) {
-                $columns[] = $column;
-                $this->outboundTargets[$cacheKey][$column] = $this->shortTableName($entry['foreign_table']);
-            }
-        }
-
-        return $this->outboundCache[$cacheKey] = array_values(array_unique($columns));
-    }
-
-    /**
-     * Fetches and caches the raw getForeignKeys() result for a physical
-     * table, so repeated lookups (from the outbound check and the inbound
-     * global sweep alike) never re-query the schema for the same table.
-     *
-     * @return list<array{name: string|null, columns: list<string>, foreign_schema: string|null, foreign_table: string, foreign_columns: list<string>, on_update: string, on_delete: string}>
-     */
-    private function rawForeignKeys(Connection $connection, string $table): array
-    {
-        $cacheKey = $this->cacheKey($connection, $table);
-
-        if (isset($this->foreignKeysCache[$cacheKey])) {
-            return $this->foreignKeysCache[$cacheKey];
-        }
-
-        /** @var list<array{name: string|null, columns: list<string>, foreign_schema: string|null, foreign_table: string, foreign_columns: list<string>, on_update: string, on_delete: string}> $foreignKeys */
-        $foreignKeys = $connection->getSchemaBuilder()->getForeignKeys($table);
-
-        return $this->foreignKeysCache[$cacheKey] = $foreignKeys;
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function inboundReferencedColumns(Connection $connection, string $table): array
-    {
-        $this->ensureInboundIndex($connection);
-
-        $connectionKey = $connection->getName();
-        $canonical = $this->canonicalTableName($connection, $table);
-
-        return $this->inboundIndex[$connectionKey][$canonical] ?? [];
-    }
-
-    /**
-     * Builds the connection-wide inbound-reference index at most once per
-     * (instance, connection): a single getTableListing() sweep, and a
-     * single getForeignKeys() call per listed table (shared with the
-     * outbound cache via rawForeignKeys()), rather than repeating both per
-     * checked table. Indexed per connection name so a second connection's
-     * sweep never mixes with or is skipped in favor of the first's.
-     */
-    private function ensureInboundIndex(Connection $connection): void
-    {
-        $connectionKey = $connection->getName();
-
-        if (isset($this->inboundIndexBuilt[$connectionKey])) {
-            return;
-        }
-
-        /** @var list<string> $tableListing */
-        $tableListing = $connection->getSchemaBuilder()->getTableListing();
-
-        foreach ($tableListing as $listedTable) {
-            $physicalShort = $this->canonicalTableName($connection, $listedTable);
-
-            $foreignKeys = $this->rawForeignKeys($connection, $physicalShort);
-
-            foreach ($foreignKeys as $entry) {
-                $targetShort = $this->canonicalTableName($connection, $entry['foreign_table']);
-
-                if ($targetShort === $physicalShort) {
-                    continue;
-                }
-
-                foreach ($entry['foreign_columns'] as $column) {
-                    $this->inboundIndex[$connectionKey][$targetShort][$column] = $physicalShort;
-                }
-            }
-        }
-
-        $this->inboundIndexBuilt[$connectionKey] = true;
-    }
-
     private function cacheKey(Connection $connection, string $table): string
     {
-        return $connection->getName().'.'.$this->canonicalTableName($connection, $table);
-    }
-
-    private function shortTableName(string $name): string
-    {
-        $position = strrpos($name, '.');
-
-        return $position === false ? $name : substr($name, $position + 1);
-    }
-
-    /**
-     * Normalizes a table name to one canonical, comparable form: strip the
-     * schema qualifier first (e.g. "public.wp_users" -> "wp_users"), then
-     * strip the connection's table prefix from that short name (e.g.
-     * "wp_users" -> "users"). Order matters — prefix-stripping a
-     * schema-qualified string never matches, since the prefix is not at the
-     * start of the qualified string. Used consistently everywhere a table
-     * name is turned into an index/cache key, so all comparisons and cache
-     * lookups address the same physical table.
-     */
-    private function canonicalTableName(Connection $connection, string $name): string
-    {
-        $short = $this->shortTableName($name);
-
-        $prefix = $connection->getTablePrefix();
-
-        return $prefix !== '' && str_starts_with($short, $prefix)
-            ? substr($short, strlen($prefix))
-            : $short;
+        return $connection->getName().'.'.$this->foreignKeys->canonicalTableName($connection, $table);
     }
 }

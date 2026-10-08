@@ -12,9 +12,10 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
  * A value-definition is one of five types, dispatched by PHP type/shape in
  * this order:
  *  1. Closure — invoked directly with (value, faker, row).
- *  2. ValueGenerator instance (e.g. Keyed::…, Format::…, Malaysia::…) —
- *     invoked directly with (value, faker, row). Checked before the static
- *     fallback so an object is never returned unchanged as a "static" value.
+ *  2. ValueGenerator instance (e.g. Keyed::…, Format::…, Malaysia::…,
+ *     Json::paths(…)) — invoked directly with (value, faker, row). Checked
+ *     before the static fallback so an object is never returned unchanged as
+ *     a "static" value.
  *  3. Invokable class-string implementing ValueGenerator — resolved via the
  *     container and invoked with (value, faker, row). Checked before the
  *     Faker-shorthand branch so a ValueGenerator class name is never

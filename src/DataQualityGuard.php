@@ -6,12 +6,14 @@ use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
+use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
 use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
 /**
  * Fail-fast validation of a Sanitizer's categorical() declaration (R4.2),
  * fired at the same choke point SchemaGuard uses — before any row is read
- * or written.
+ * or written. A Json::paths() column cannot be categorical: sampling would
+ * replace the whole document with another row's original.
  */
 class DataQualityGuard implements DataQualityGuardContract
 {
@@ -46,6 +48,10 @@ class DataQualityGuard implements DataQualityGuardContract
 
             if ($fields[$column] instanceof Keyed) {
                 throw InvalidCategoricalColumnException::keyed($modelClass, $column, $sanitizer::class);
+            }
+
+            if ($fields[$column] instanceof JsonPaths) {
+                throw InvalidCategoricalColumnException::jsonPaths($modelClass, $column, $sanitizer::class);
             }
         }
 

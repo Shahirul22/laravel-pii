@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Sanitizer;
 use Shahirul22\LaravelPiiSanitizer\UniqueColumnInspector;
+use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
 
 /**
  * Run-scoped state behind Keyed collision resolution. The runner calls
@@ -33,6 +34,12 @@ use Shahirul22\LaravelPiiSanitizer\UniqueColumnInspector;
  * versus ab12) behave as the database sees them. Collations that fold
  * accents or trailing spaces are not covered.
  *
+ * register() also scans each Json::paths() definition for Keyed path
+ * definitions and records them as non-unique path bindings, so a path and a
+ * flat column in one namespace map the same input to the same replacement
+ * (docs/design/referenced-identifier-structured-column-sanitization/spec,
+ * "Composition").
+ *
  * See docs/design/value-generation-primitives/spec, "R1.2 — Deterministic uniqueness".
  */
 final class KeyedValueRegistry
@@ -40,7 +47,7 @@ final class KeyedValueRegistry
     /** @var array<string, string> namespace => shape signature */
     private array $signatures = [];
 
-    /** @var array<string, list<array{connection: ?string, table: string, column: string, unique: bool}>> */
+    /** @var array<string, list<array{connection: ?string, table: string, column: string, path: ?string, unique: bool}>> */
     private array $bindings = [];
 
     /** @var array<string, true> */
@@ -74,21 +81,32 @@ final class KeyedValueRegistry
         $connection = $model->getConnectionName();
 
         foreach ($sanitizer->fields() as $column => $definition) {
+            if ($definition instanceof JsonPaths) {
+                foreach ($definition->definitions() as $path => $inner) {
+                    if (! $inner instanceof Keyed) {
+                        continue;
+                    }
+
+                    $namespace = $this->registerShape($inner);
+
+                    // A path is never unique: no schema index addresses it, so it seeds no originals.
+                    $this->bindings[$namespace][] = [
+                        'connection' => $connection,
+                        'table' => $table,
+                        'column' => (string) $column,
+                        'path' => (string) $path,
+                        'unique' => false,
+                    ];
+                }
+
+                continue;
+            }
+
             if (! $definition instanceof Keyed) {
                 continue;
             }
 
-            // The first Keyed field of a run fails fast here on a bad key.
-            $this->key();
-
-            $namespace = $definition->namespace();
-            $signature = $definition->signature();
-
-            if (isset($this->signatures[$namespace]) && $this->signatures[$namespace] !== $signature) {
-                throw InvalidConfigurationException::keyedNamespaceShapeMismatch($namespace);
-            }
-
-            $this->signatures[$namespace] = $signature;
+            $namespace = $this->registerShape($definition);
 
             $unique = $this->isUniqueMember($table, $connection, (string) $column);
 
@@ -96,6 +114,7 @@ final class KeyedValueRegistry
                 'connection' => $connection,
                 'table' => $table,
                 'column' => (string) $column,
+                'path' => null,
                 'unique' => $unique,
             ];
 
@@ -109,6 +128,18 @@ final class KeyedValueRegistry
     public function isUniqueBound(string $namespace): bool
     {
         return isset($this->uniqueBound[$namespace]);
+    }
+
+    /**
+     * This run's bindings for $namespace, in registration order. A path binding (path non-null) is
+     * never unique: no schema index addresses a JSON path, so it seeds no originals and never makes
+     * the namespace unique-bound; it joins whatever the namespace is.
+     *
+     * @return list<array{connection: ?string, table: string, column: string, path: ?string, unique: bool}>
+     */
+    public function bindings(string $namespace): array
+    {
+        return $this->bindings[$namespace] ?? [];
     }
 
     public function assigned(string $namespace, string $digest): ?string
@@ -151,6 +182,27 @@ final class KeyedValueRegistry
     public static function comparisonKey(mixed $value): string
     {
         return mb_strtolower((string) $value, 'UTF-8');
+    }
+
+    /**
+     * Loads the key (so the first Keyed value of a run fails fast on a bad key) and checks the namespace's shape signature.
+     *
+     * @throws InvalidConfigurationException
+     */
+    private function registerShape(Keyed $definition): string
+    {
+        $this->key();
+
+        $namespace = $definition->namespace();
+        $signature = $definition->signature();
+
+        if (isset($this->signatures[$namespace]) && $this->signatures[$namespace] !== $signature) {
+            throw InvalidConfigurationException::keyedNamespaceShapeMismatch($namespace);
+        }
+
+        $this->signatures[$namespace] = $signature;
+
+        return $namespace;
     }
 
     private function isUniqueMember(string $table, ?string $connection, string $column): bool

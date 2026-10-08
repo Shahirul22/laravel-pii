@@ -94,6 +94,10 @@ class SanitizeCommand extends Command
         $this->bar = null;
         $this->newLine(2);
 
+        if ($report->foreignKeysSuspended) {
+            $this->line('Foreign-key enforcement was suspended for this run because opted-in referenced columns were rewritten.');
+        }
+
         if ($report->failed()) {
             $this->renderFailureSummary($report, $resolvedTargets);
 
@@ -293,5 +297,9 @@ class SanitizeCommand extends Command
         $notAttemptedCount = count($notAttempted);
 
         $this->components->error(sprintf('%d model failed; %d model(s) were not attempted. See above for detail.', 1, $notAttemptedCount));
+
+        if ($report->foreignKeysSuspended) {
+            $this->warn('Foreign-key enforcement was suspended and the run stopped part-way, so referenced columns and their mirrors may now disagree. Restore the database dump and run again: re-running on partly sanitized data does not repair them.');
+        }
     }
 }

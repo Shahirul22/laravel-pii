@@ -320,3 +320,119 @@ namespace {
         expect($key->source)->toBe('primary');
     });
 }
+
+namespace {
+    use Illuminate\Database\Eloquent\Model;
+    use Illuminate\Support\Facades\Schema;
+    use Shahirul22\LaravelPiiSanitizer\Exceptions\UnpageableTableException;
+    use Shahirul22\LaravelPiiSanitizer\PagingKeyResolver;
+    use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+
+    class PkOptInNatural extends Model
+    {
+        protected $table = 'pk_opt_in_naturals';
+
+        protected $primaryKey = 'nric';
+
+        protected $keyType = 'string';
+
+        public $incrementing = false;
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class PkOptInKeyless extends Model
+    {
+        protected $table = 'pk_opt_in_keyless';
+
+        protected $primaryKey = 'code';
+
+        protected $keyType = 'string';
+
+        public $incrementing = false;
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class PkOptInBare extends Model
+    {
+        protected $table = 'pk_opt_in_bare';
+
+        protected $primaryKey = 'nric';
+
+        protected $keyType = 'string';
+
+        public $incrementing = false;
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    function pkOptInSanitizer(array $fields): Sanitizer
+    {
+        return new class($fields) extends Sanitizer
+        {
+            public function __construct(private array $f) {}
+
+            public function fields(): array
+            {
+                return $this->f;
+            }
+        };
+    }
+
+    it('pages an opted-in primary key on a disjoint unique column', function () {
+        Schema::create('pk_opt_in_naturals', function ($table) {
+            $table->string('nric')->primary();
+            $table->integer('customer_no')->unique();
+            $table->string('name')->nullable();
+        });
+
+        $key = app(PagingKeyResolver::class)->resolve(new PkOptInNatural, pkOptInSanitizer(['nric' => 'x']));
+
+        expect($key->columns)->toBe(['customer_no']);
+        expect($key->source)->toBe('unique');
+    });
+
+    it('skips the model-key branch when the model key is in fields()', function () {
+        Schema::create('pk_opt_in_keyless', function ($table) {
+            $table->string('code');
+            $table->string('ref')->unique();
+        });
+
+        $key = app(PagingKeyResolver::class)->resolve(new PkOptInKeyless, pkOptInSanitizer(['code' => 'x']));
+
+        expect($key->columns)->toBe(['ref']);
+        expect($key->source)->toBe('unique');
+    });
+
+    it('throws optedInPrimaryKey when no disjoint identity exists', function () {
+        Schema::create('pk_opt_in_bare', function ($table) {
+            $table->string('nric')->primary();
+            $table->string('name')->nullable();
+        });
+
+        $sanitizer = pkOptInSanitizer(['nric' => 'x']);
+
+        expect(fn () => app(PagingKeyResolver::class)->resolve(new PkOptInBare, $sanitizer))
+            ->toThrow(UnpageableTableException::class, UnpageableTableException::optedInPrimaryKey(PkOptInBare::class, 'pk_opt_in_bare', $sanitizer::class, 'nric')->getMessage());
+    });
+
+    it('still resolves the primary key when it is not in fields()', function () {
+        Schema::create('pk_opt_in_naturals', function ($table) {
+            $table->string('nric')->primary();
+            $table->integer('customer_no')->unique();
+            $table->string('name')->nullable();
+        });
+
+        $key = app(PagingKeyResolver::class)->resolve(new PkOptInNatural, pkOptInSanitizer(['name' => 'x']));
+
+        expect($key->columns)->toBe(['nric']);
+        expect($key->source)->toBe('primary');
+    });
+}

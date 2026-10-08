@@ -24,6 +24,9 @@ class PiiSanitizerServiceProvider extends ServiceProvider
         $this->app->singleton(SanitizerResolverContract::class, SanitizerResolver::class);
 
         $this->app->singleton(UniqueColumnInspector::class);
+        $this->app->singleton(ForeignKeyInspector::class);
+        $this->app->singleton(ForeignKeySuspender::class);
+        $this->app->singleton(ReferencedColumnGuard::class);
         $this->app->singleton(UniqueValueTracker::class);
         $this->app->singleton(DistributionSampler::class);
         $this->app->singleton(ReplacementGenerator::class);

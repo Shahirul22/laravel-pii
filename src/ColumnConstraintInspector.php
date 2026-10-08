@@ -2,6 +2,7 @@
 
 namespace Shahirul22\LaravelPiiSanitizer;
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
 
 /**
@@ -21,6 +22,9 @@ class ColumnConstraintInspector
     /** @var array<string, array<string, ColumnConstraints>> */
     private array $cache = [];
 
+    /** @var array<string, list<string>> */
+    private array $autoUpdatedCache = [];
+
     public function __construct(
         private readonly DatabaseManager $db,
     ) {}
@@ -32,6 +36,62 @@ class ColumnConstraintInspector
     public function reset(): void
     {
         $this->cache = [];
+        $this->autoUpdatedCache = [];
+    }
+
+    /**
+     * The columns MySQL or MariaDB set to the current time on every UPDATE
+     * of a row that does not assign them (`ON UPDATE CURRENT_TIMESTAMP`, as
+     * Laravel's useCurrentOnUpdate() declares). Read from the EXTRA attribute
+     * in information_schema, which getColumns() does not return. Memoized
+     * per (connection, table) until reset(). Every other driver has no such
+     * column, and gets an empty list without a query.
+     *
+     * @return list<string>
+     */
+    public function autoUpdatedColumns(Connection $connection, string $table): array
+    {
+        if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+            return [];
+        }
+
+        $cacheKey = $connection->getName().'.'.$table;
+
+        if (isset($this->autoUpdatedCache[$cacheKey])) {
+            return $this->autoUpdatedCache[$cacheKey];
+        }
+
+        [$schema, $name] = $connection->getSchemaBuilder()->parseSchemaAndTable($table);
+        $grammar = $connection->getSchemaGrammar();
+
+        $rows = $connection->selectFromWriteConnection($grammar->compileColumns($schema, $connection->getTablePrefix().$name));
+
+        return $this->autoUpdatedCache[$cacheKey] = self::autoUpdatedColumnsFrom($rows);
+    }
+
+    /**
+     * The pure step of autoUpdatedColumns(): the names of the rows whose
+     * `extra` holds `on update` (MySQL reports `DEFAULT_GENERATED on update
+     * CURRENT_TIMESTAMP`, MariaDB `on update current_timestamp()`).
+     *
+     * @param  array<int, mixed>  $rows  rows of the schema grammar's compileColumns() query
+     * @return list<string>
+     */
+    public static function autoUpdatedColumnsFrom(array $rows): array
+    {
+        $columns = [];
+
+        foreach ($rows as $row) {
+            $row = (array) $row;
+            $name = $row['name'] ?? null;
+            $extra = $row['extra'] ?? null;
+
+            if (is_string($name) && is_string($extra) && stripos($extra, 'on update') !== false) {
+                $columns[] = $name;
+            }
+        }
+
+        return $columns;
     }
 
     /**
@@ -131,7 +191,15 @@ class ColumnConstraintInspector
             return 'set';
         }
 
-        if (in_array($typeName, ['varchar', 'char', 'character varying', 'character', 'bpchar', 'text', 'tinytext', 'mediumtext', 'longtext', 'enum', 'uuid', 'citext'], true)) {
+        // A MySQL or MariaDB ENUM is validated like a string against its
+        // allowed set, but it is its own family because it sorts by member
+        // position rather than as text, so it can never be part of a paging
+        // identity (PagingKeyResolver).
+        if ($typeName === 'enum') {
+            return 'enum';
+        }
+
+        if (in_array($typeName, ['varchar', 'char', 'character varying', 'character', 'bpchar', 'text', 'tinytext', 'mediumtext', 'longtext', 'uuid', 'citext'], true)) {
             return 'string';
         }
 
@@ -158,8 +226,11 @@ class ColumnConstraintInspector
             return null;
         }
 
-        // pgsql
-        if (preg_match('/^(?:character varying|varchar|character|char|bpchar)\((\d+)\)/', $type, $m) === 1) {
+        // pgsql. Anchored at the end: an array type such as
+        // `character varying(5)[]` carries the length of each element, not
+        // of the array literal, so it gets no limit and the database checks
+        // every element itself.
+        if (preg_match('/^(?:character varying|varchar|character|char|bpchar)\((\d+)\)$/', $type, $m) === 1) {
             return (int) $m[1];
         }
 

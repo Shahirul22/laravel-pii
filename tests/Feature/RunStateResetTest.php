@@ -22,9 +22,17 @@ namespace {
         /** @var list<string> */
         public static array $categorical = [];
 
+        /** @var array<string, list<string>> */
+        public static array $mirrors = [];
+
         public function fields(): array
         {
             return static::$fields;
+        }
+
+        public function mirrors(): array
+        {
+            return static::$mirrors;
         }
 
         public function categorical(): array
@@ -36,6 +44,14 @@ namespace {
     function rsrKeyed(): Keyed
     {
         return Keyed::pattern('rsr-name', '????????');
+    }
+
+    class RsrTicketSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['holder' => Keyed::pattern('rsr-email', '????????')];
+        }
     }
 }
 
@@ -89,6 +105,7 @@ namespace {
 
         RsrUserSanitizer::$fields = ['name' => 'name'];
         RsrUserSanitizer::$categorical = [];
+        RsrUserSanitizer::$mirrors = [];
 
         rsrCreateUsers();
     });
@@ -108,6 +125,93 @@ namespace {
         });
 
         expect(fn () => rsrRun(dryRun: true))->toThrow(UnsafeColumnException::class, 'rsr_orders');
+    });
+
+    // BUG-14 (round 2): the run above only adds a table that run 1 never
+    // read. These pin the other ForeignKeyInspector caches: a table that
+    // run 1 already read gains a foreign key before run 2.
+    it('sees a foreign key on the model table itself when the table is recreated between two runs', function () {
+        Schema::create('rsr_tiers', function ($table) {
+            $table->id();
+            $table->string('code')->unique();
+        });
+
+        RsrUserSanitizer::$fields = ['tier' => 'word'];
+
+        expect(rsrRun(dryRun: true)->failed())->toBeFalse();
+
+        Schema::drop('rsr_users');
+        Schema::create('rsr_users', function ($table) {
+            $table->id();
+            $table->string('email')->unique();
+            $table->string('name')->nullable();
+            $table->string('tier')->nullable();
+            $table->foreign('tier')->references('code')->on('rsr_tiers');
+        });
+
+        expect(fn () => rsrRun(dryRun: true))->toThrow(UnsafeColumnException::class, 'is a foreign key on table "rsr_users" (references "rsr_tiers")');
+    });
+
+    it('sees a foreign key added to a table that run 1 already listed', function () {
+        Schema::create('rsr_orders', function ($table) {
+            $table->id();
+            $table->string('user_email')->nullable();
+        });
+
+        RsrUserSanitizer::$fields = ['email' => 'safeEmail'];
+
+        expect(rsrRun(dryRun: true)->failed())->toBeFalse();
+
+        Schema::drop('rsr_orders');
+        Schema::create('rsr_orders', function ($table) {
+            $table->id();
+            $table->string('user_email')->nullable();
+            $table->foreign('user_email')->references('email')->on('rsr_users');
+        });
+
+        expect(fn () => rsrRun(dryRun: true))->toThrow(UnsafeColumnException::class, 'is referenced by a foreign key on table "rsr_orders"');
+    });
+
+    it('forgets a foreign key dropped between two runs', function () {
+        Schema::create('rsr_orders', function ($table) {
+            $table->id();
+            $table->string('user_email')->nullable();
+            $table->foreign('user_email')->references('email')->on('rsr_users');
+        });
+
+        RsrUserSanitizer::$fields = ['email' => 'safeEmail'];
+
+        expect(fn () => rsrRun(dryRun: true))->toThrow(UnsafeColumnException::class, 'rsr_orders');
+
+        Schema::drop('rsr_orders');
+        Schema::create('rsr_orders', function ($table) {
+            $table->id();
+            $table->string('user_email')->nullable();
+        });
+
+        expect(rsrRun(dryRun: true)->failed())->toBeFalse();
+    });
+
+    it('sees a foreign key added between two runs that touches a mirror group', function () {
+        Schema::create('rsr_tickets', function ($table) {
+            $table->id();
+            $table->string('holder')->nullable();
+        });
+
+        config()->set('pii.tables', ['rsr_tickets' => RsrTicketSanitizer::class]);
+
+        RsrUserSanitizer::$fields = ['email' => Keyed::pattern('rsr-email', '????????')];
+        RsrUserSanitizer::$mirrors = ['email' => ['rsr_tickets.holder']];
+
+        expect(rsrRun(dryRun: true)->failed())->toBeFalse();
+
+        Schema::create('rsr_orders', function ($table) {
+            $table->id();
+            $table->string('user_email')->nullable();
+            $table->foreign('user_email')->references('email')->on('rsr_users');
+        });
+
+        expect(fn () => rsrRun(dryRun: true))->toThrow(UnsafeColumnException::class, 'rsr_orders.user_email -> rsr_users.email');
     });
 
     it('sees a column added between two runs in one process', function () {

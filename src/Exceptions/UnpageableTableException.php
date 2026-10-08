@@ -11,6 +11,25 @@ final class UnpageableTableException extends \RuntimeException
         );
     }
 
+    public static function unsupportedIdentityType(string $modelClass, string $table, string $sanitizerClass, string $column, string $reason): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] Cannot page {$table} ({$modelClass}, sanitized by {$sanitizerClass}): column \${$column} {$reason} No other NOT NULL unique column set disjoint from fields() was found. Declare {$sanitizerClass}::pagingKey() with NOT NULL columns of another type that uniquely identify each row and are not in fields()."
+        );
+    }
+
+    /**
+     * Raised mid-run by the key-set loop, which cannot select the next page:
+     * the last row's identity value is not a plain value that can be bound
+     * back, or the page ended on the same identity as the page before.
+     */
+    public static function unbindableIdentity(string $modelClass, string $table, string $column, string $reason): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] Stopped paging {$table} ({$modelClass}): identity column \${$column} {$reason} Declare a pagingKey() of NOT NULL integer or string columns that uniquely identify each row and are not in fields()."
+        );
+    }
+
     public static function optedInPrimaryKey(string $modelClass, string $table, string $sanitizerClass, string $column): self
     {
         return new self(

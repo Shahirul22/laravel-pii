@@ -82,6 +82,30 @@ namespace {
         }
     }
 
+    class CmdProgressStringKeyUser extends Model
+    {
+        protected $table = 'cmd_progress_string_key_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+
+        public $incrementing = false;
+
+        protected $primaryKey = 'code';
+
+        protected $keyType = 'string';
+    }
+
+    class CmdProgressCompositeKeyUser extends Model
+    {
+        protected $table = 'cmd_progress_composite_key_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
     class CmdProgressUnsanitizedUser extends Model
     {
         protected $table = 'cmd_progress_unsanitized_users';
@@ -230,6 +254,103 @@ namespace {
         expect($output)->toContain('Chunk #2 failed (identity values withheld)');
         expect($output)->not->toContain('natural-');
         expect($output)->not->toContain('@example.com');
+    });
+
+    /**
+     * Fails chunk #2 (rows 3 and 4) of a run over $codes with chunk size 2
+     * and returns the command output.
+     *
+     * @param  list<string>  $codes
+     */
+    function cmdProgressFailStringKeys(array $codes): string
+    {
+        CmdProgressNaturalUserSanitizer::$seen = 0;
+
+        Schema::create('cmd_progress_string_key_users', function ($table) {
+            $table->string('code')->primary();
+            $table->string('name');
+        });
+
+        foreach ($codes as $code) {
+            DB::table('cmd_progress_string_key_users')->insert(['code' => $code, 'name' => 'Seed']);
+        }
+
+        config()->set('pii.sanitizers', [CmdProgressStringKeyUser::class => CmdProgressNaturalUserSanitizer::class]);
+        config()->set('pii.models', [CmdProgressStringKeyUser::class]);
+
+        return cmdProgressRun(['--chunk' => 2], 1);
+    }
+
+    // BUG-15 (round 2): the failure line prints a chunk's key range only
+    // for integer, UUID and ULID identities, matched as the whole value.
+    it('prints the key range of a failed chunk for a UUID identity', function () {
+        $codes = array_map(fn (int $i): string => sprintf('0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5%d', $i), range(0, 5));
+
+        expect(cmdProgressFailStringKeys($codes))->toContain('Chunk #2 failed (keys 0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a52–0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a53)');
+    });
+
+    it('prints the key range of a failed chunk for a ULID identity', function () {
+        $codes = array_map(fn (int $i): string => sprintf('01J9ZQ4V5B6C7D8E9F0GHJKMN%d', $i), range(0, 5));
+
+        expect(cmdProgressFailStringKeys($codes))->toContain('Chunk #2 failed (keys 01J9ZQ4V5B6C7D8E9F0GHJKMN2–01J9ZQ4V5B6C7D8E9F0GHJKMN3)');
+    });
+
+    it('withholds an identity that only contains a UUID', function (string $format) {
+        $codes = array_map(fn (int $i): string => sprintf($format, $i), range(0, 5));
+
+        $output = cmdProgressFailStringKeys($codes);
+
+        expect($output)->toContain('Chunk #2 failed (identity values withheld)');
+        expect($output)->not->toContain('corp.example');
+        expect($output)->not->toContain('0191a2b3');
+    })->with([
+        'UUID then an email domain' => ['0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5%d@corp.example'],
+        'a name then a UUID' => ['corp.example-0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5%d'],
+        'UUID then a newline' => ["0191a2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5%d\ncorp.example"],
+    ]);
+
+    it('withholds a composite identity when one member is a natural key', function () {
+        CmdProgressNaturalUserSanitizer::$seen = 0;
+
+        Schema::create('cmd_progress_composite_key_users', function ($table) {
+            $table->integer('org_id');
+            $table->string('email');
+            $table->string('name');
+            $table->primary(['org_id', 'email']);
+        });
+
+        for ($i = 0; $i < 6; $i++) {
+            DB::table('cmd_progress_composite_key_users')->insert(['org_id' => 1, 'email' => "person-{$i}@corp.example", 'name' => 'Seed']);
+        }
+
+        config()->set('pii.sanitizers', [CmdProgressCompositeKeyUser::class => CmdProgressNaturalUserSanitizer::class]);
+        config()->set('pii.models', [CmdProgressCompositeKeyUser::class]);
+
+        $output = cmdProgressRun(['--chunk' => 2], 1);
+
+        expect($output)->toContain('Chunk #2 failed (identity values withheld)');
+        expect($output)->not->toContain('person-');
+        expect($output)->not->toContain('corp.example');
+    });
+
+    it('prints a composite identity whose members are all integers', function () {
+        CmdProgressNaturalUserSanitizer::$seen = 0;
+
+        Schema::create('cmd_progress_composite_key_users', function ($table) {
+            $table->integer('org_id');
+            $table->integer('member_id');
+            $table->string('name');
+            $table->primary(['org_id', 'member_id']);
+        });
+
+        for ($i = 1; $i <= 6; $i++) {
+            DB::table('cmd_progress_composite_key_users')->insert(['org_id' => 1, 'member_id' => $i, 'name' => 'Seed']);
+        }
+
+        config()->set('pii.sanitizers', [CmdProgressCompositeKeyUser::class => CmdProgressNaturalUserSanitizer::class]);
+        config()->set('pii.models', [CmdProgressCompositeKeyUser::class]);
+
+        expect(cmdProgressRun(['--chunk' => 2], 1))->toContain('Chunk #2 failed (keys org_id=1, member_id=3–org_id=1, member_id=4)');
     });
 
     it('names an unattempted model explicitly in the failure summary', function () {

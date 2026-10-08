@@ -8,11 +8,12 @@ namespace Shahirul22\LaravelPiiSanitizer;
  * docs/design/engine-hardening/spec §R6.
  *
  * $family is one of: integer, decimal, boolean, datetime, json, string, set,
- * binary, other. `set` is the MySQL SET family specifically: type-checked as
- * a string, but its allowed-set membership is checked per comma-separated
+ * enum, binary, other. `set` is the MySQL SET family specifically: type-checked
+ * as a string, but its allowed-set membership is checked per comma-separated
  * member rather than against the whole value, so a valid multi-member SET
  * value (e.g. "a,c") is not falsely rejected as not matching any single
- * allowed entry.
+ * allowed entry. `enum` is the MySQL and MariaDB ENUM: type-checked as a
+ * string against its allowed set, and never part of a paging identity.
  *
  * $nativeType is the column type exactly as getColumns() reports it (for
  * example `character varying(100)` on PostgreSQL), or null when unknown. It

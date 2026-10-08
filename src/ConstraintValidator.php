@@ -72,7 +72,7 @@ final class ConstraintValidator
             'boolean' => is_bool($value) || in_array($value, [0, 1, '0', '1'], true) || $this->fitsTinyintOne($constraints, $value),
             'datetime' => is_string($value) || is_int($value),
             'json' => is_array($value) || (is_string($value) && $this->isValidJson($value)),
-            'string', 'set' => is_scalar($value),
+            'string', 'set', 'enum' => is_scalar($value),
             default => true,
         };
     }

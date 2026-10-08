@@ -84,9 +84,11 @@ class SanitizerResolver implements SanitizerResolverContract
      */
     private function make(string $sanitizerClass, Model|string $model, ?string $configKey): Sanitizer
     {
-        // A missing class would otherwise surface as the container's raw
-        // BindingResolutionException.
-        if (! class_exists($sanitizerClass) && ! app()->bound($sanitizerClass)) {
+        // A missing class, or an existing class that is not a sanitizer
+        // (which the container may be unable to build), would otherwise
+        // surface as the container's raw BindingResolutionException. A
+        // binding under a name that is not a class is built and checked.
+        if (class_exists($sanitizerClass) ? ! is_subclass_of($sanitizerClass, Sanitizer::class) : ! app()->bound($sanitizerClass)) {
             throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass, $configKey);
         }
 

@@ -51,9 +51,9 @@ class SchemaGuard implements SchemaGuardContract
     {
         $modelClass = is_object($model) ? $model::class : $model;
 
-        // A missing class would otherwise surface as the container's raw
-        // BindingResolutionException.
-        if (! is_object($model) && ! class_exists($modelClass) && ! app()->bound($modelClass)) {
+        // A missing class, or an existing class that is not a model, would
+        // otherwise surface as the container's raw BindingResolutionException.
+        if (! is_object($model) && (class_exists($modelClass) ? ! is_subclass_of($modelClass, Model::class) : ! app()->bound($modelClass))) {
             throw InvalidConfigurationException::invalidModelClass($modelClass);
         }
 
@@ -101,7 +101,7 @@ class SchemaGuard implements SchemaGuardContract
                 continue;
             }
 
-            if (in_array($column, $outbound, true)) {
+            if (in_array($this->foreignKeys->columnKey($connection, $column), $outbound, true)) {
                 throw UnsafeColumnException::outboundForeignKey(
                     $modelClass,
                     $column,
@@ -123,20 +123,22 @@ class SchemaGuard implements SchemaGuardContract
                 continue;
             }
 
+            $columnKey = $this->foreignKeys->columnKey($connection, $column);
+
             // A self-referenced primary key keeps its primary-key message, as before self references were indexed.
-            if (($inbound[$column] ?? null) === $canonicalTable) {
+            if (($inbound[$columnKey] ?? null) === $canonicalTable) {
                 $selfReferenced[] = $column;
 
                 continue;
             }
 
-            if (array_key_exists($column, $inbound)) {
+            if (array_key_exists($columnKey, $inbound)) {
                 throw UnsafeColumnException::inboundReference(
                     $modelClass,
                     $column,
                     $sanitizer::class,
                     $table,
-                    $inbound[$column]
+                    $inbound[$columnKey]
                 );
             }
         }
@@ -181,7 +183,7 @@ class SchemaGuard implements SchemaGuardContract
                 $selfReferenced[0],
                 $sanitizer::class,
                 $table,
-                $inbound[$selfReferenced[0]]
+                $inbound[$this->foreignKeys->columnKey($connection, $selfReferenced[0])]
             );
         }
 

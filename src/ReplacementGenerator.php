@@ -274,7 +274,11 @@ class ReplacementGenerator
      * Builds the value tuple for one constraint: a declared column
      * contributes its (possibly just-regenerated) candidate value; an
      * undeclared member of a composite constraint contributes the row's
-     * current value, held fixed.
+     * raw attribute value (as stored, before any cast), held fixed. Raw, not
+     * cast, because UniqueValueTracker::seed() reads the stored values: a
+     * boolean cast would give true where the seeded tuple holds 1, and a
+     * date cast a Carbon instance where it holds the stored text, so a
+     * collision with an original row would be missed.
      *
      * @param  list<string>  $constraint
      * @param  array<string, mixed>  $values
@@ -286,7 +290,7 @@ class ReplacementGenerator
         return array_map(
             fn (string $column): mixed => in_array($column, $declared, true)
                 ? $values[$column]
-                : $row->getAttribute($column),
+                : $row->getAttributes()[$column] ?? null,
             $constraint
         );
     }

@@ -16,6 +16,7 @@ use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\UnpageableTableException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsupportedCastException;
 use Shahirul22\LaravelPiiSanitizer\Values\KeyedValueRegistry;
 
@@ -151,9 +152,11 @@ final class SanitizationRunner
         $targets = [];
 
         foreach ($modelClasses as $modelClass) {
-            // A mistyped class would otherwise surface as the container's raw
-            // BindingResolutionException.
-            if (! class_exists($modelClass) && ! app()->bound($modelClass)) {
+            // A mistyped class, or an existing class that is not a model
+            // (which the container may be unable to build), would otherwise
+            // surface as the container's raw BindingResolutionException. A
+            // binding under a name that is not a class is built and checked.
+            if (class_exists($modelClass) ? ! is_subclass_of($modelClass, Model::class) : ! app()->bound($modelClass)) {
                 throw InvalidConfigurationException::invalidModelClass($modelClass);
             }
 
@@ -470,10 +473,24 @@ final class SanitizationRunner
             $lastRow = $rows->last();
             $lastAttributes = $lastRow->getAttributes();
 
+            $previous = $lastSeen;
             $lastSeen = [];
 
             foreach ($columns as $column) {
                 $lastSeen[$column] = $lastAttributes[$column];
+            }
+
+            // A defence behind PagingKeyResolver's type checks: a last key
+            // that cannot be bound back, or one that does not move forward,
+            // would select the wrong next page or the same page for ever.
+            foreach ($lastSeen as $column => $value) {
+                if (! is_scalar($value)) {
+                    throw UnpageableTableException::unbindableIdentity($query->getModel()::class, $query->getModel()->getTable(), $column, 'was read back as a value of type '.get_debug_type($value).', which cannot be bound back to select the next page.');
+                }
+            }
+
+            if ($lastSeen === $previous) {
+                throw UnpageableTableException::unbindableIdentity($query->getModel()::class, $query->getModel()->getTable(), $columns[0], 'ended two pages on the same value, so paging would never finish.');
             }
 
             $result = $callback($rows);
@@ -757,8 +774,12 @@ final class SanitizationRunner
         $parametersPerRow = $columnCount * ($k + 1) + $k;
         $rowsPerSubBatch = max(1, intdiv(self::MAX_BOUND_PARAMETERS_PER_STATEMENT, $parametersPerRow));
 
+        // MySQL and MariaDB only: ON UPDATE CURRENT_TIMESTAMP columns, kept
+        // as they were (empty, and no query, on every other driver).
+        $keepColumns = $this->constraintInspector->autoUpdatedColumns($connection, $table);
+
         foreach (array_chunk($rowsToWrite, $rowsPerSubBatch) as $subBatch) {
-            [$sql, $bindings] = BatchUpdateStatement::build($connection->getQueryGrammar(), $table, $identityColumns, $columns, $subBatch, $valueTypes);
+            [$sql, $bindings] = BatchUpdateStatement::build($connection->getQueryGrammar(), $table, $identityColumns, $columns, $subBatch, $valueTypes, $keepColumns);
 
             $connection->update($sql, $bindings);
         }

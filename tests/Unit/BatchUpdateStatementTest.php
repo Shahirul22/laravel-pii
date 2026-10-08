@@ -89,7 +89,7 @@ it('drops the length or precision so the cast never truncates or rounds before t
     expect(BatchUpdateStatement::postgresCastType($type))->toBe($expected);
 })->with([
     ['character varying(255)', 'character varying'],
-    ['character(3)', 'character'],
+    ['character(3)', 'bpchar'],
     ['bit varying(8)', 'bit varying'],
     ['numeric(10, 2)', 'numeric'],
     ['time(6) with time zone', 'time with time zone'],

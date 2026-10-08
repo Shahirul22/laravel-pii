@@ -26,6 +26,15 @@ use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
  *
  * Every cache is keyed by connection name plus that identity so a second
  * connection's or a second schema's tables never poison or mask the first's.
+ *
+ * Names are compared the way the database compares them. SQLite compares
+ * table and column names without regard to letter case, and accepts a
+ * REFERENCES clause written in another case than the table it names;
+ * MySQL and MariaDB compare column names, and database names on a server
+ * with lower_case_table_names set, without regard to case. On those
+ * drivers the identity keys and the column keys are lower-cased (see
+ * identityKey() and columnKey()); PostgreSQL and SQL Server names are kept
+ * exactly as the catalog reports them.
  */
 final class ForeignKeyInspector
 {
@@ -84,6 +93,8 @@ final class ForeignKeyInspector
     }
 
     /**
+     * The table's foreign-key columns, as column keys (see columnKey()).
+     *
      * @return list<string>
      */
     public function outboundForeignKeyColumns(Connection $connection, string $table): array
@@ -101,6 +112,8 @@ final class ForeignKeyInspector
             $target = $this->displayName($connection, $this->physicalTable($connection, $entry['foreign_schema'], $entry['foreign_table']));
 
             foreach ($entry['columns'] as $column) {
+                $column = $this->columnKey($connection, $column);
+
                 $columns[] = $column;
                 $this->outboundTargets[$cacheKey][$column] = $target;
             }
@@ -116,12 +129,13 @@ final class ForeignKeyInspector
     {
         $this->outboundForeignKeyColumns($connection, $table);
 
-        return $this->outboundTargets[$this->identityKey($connection, $this->modelTable($connection, $table))][$column];
+        return $this->outboundTargets[$this->identityKey($connection, $this->modelTable($connection, $table))][$this->columnKey($connection, $column)];
     }
 
     /**
      * Every column referenced by a foreign key in the connection's schema, mapped to a referencing table;
-     * a self-referencing key counts, so the referencing table can be $table itself.
+     * a self-referencing key counts, so the referencing table can be $table itself. Keyed by column key
+     * (see columnKey()).
      *
      * @return array<string, string>
      */
@@ -146,12 +160,13 @@ final class ForeignKeyInspector
     public function edgesTouching(Connection $connection, string $table, string $column): array
     {
         $key = $this->tableKey($connection, $table);
+        $column = $this->columnKey($connection, $column);
 
         $edges = [];
 
         foreach ($this->allEdges($connection) as $edge) {
-            $child = $edge['child_key'] === $key && in_array($column, $edge['child_columns'], true);
-            $parent = $edge['parent_key'] === $key && in_array($column, $edge['parent_columns'], true);
+            $child = $edge['child_key'] === $key && in_array($column, $this->columnKeys($connection, $edge['child_columns']), true);
+            $parent = $edge['parent_key'] === $key && in_array($column, $this->columnKeys($connection, $edge['parent_columns']), true);
 
             if ($child || $parent) {
                 $edges[] = $edge;
@@ -159,6 +174,26 @@ final class ForeignKeyInspector
         }
 
         return $edges;
+    }
+
+    /**
+     * The comparable form of a column name on this connection: lower-cased
+     * where the database compares column names without regard to case
+     * (SQLite, MySQL, MariaDB), unchanged elsewhere. Two names are the same
+     * column exactly when their keys are equal.
+     */
+    public function columnKey(Connection $connection, string $column): string
+    {
+        return $this->foldsColumnCase($connection) ? strtolower($column) : $column;
+    }
+
+    /**
+     * @param  list<string>  $columns
+     * @return list<string>
+     */
+    private function columnKeys(Connection $connection, array $columns): array
+    {
+        return array_map(fn (string $column): string => $this->columnKey($connection, $column), $columns);
     }
 
     /**
@@ -333,7 +368,7 @@ final class ForeignKeyInspector
                 $targetKey = $this->identityKey($connection, $this->physicalTable($connection, $entry['foreign_schema'], $entry['foreign_table']));
 
                 foreach ($entry['foreign_columns'] as $column) {
-                    $this->inboundIndex[$connectionKey][$targetKey][$column] = $referencing;
+                    $this->inboundIndex[$connectionKey][$targetKey][$this->columnKey($connection, $column)] = $referencing;
                 }
             }
         }
@@ -361,7 +396,9 @@ final class ForeignKeyInspector
      */
     private function physicalTable(Connection $connection, ?string $schema, string $table): array
     {
-        if ($schema !== null && $schema === $this->defaultSchema($connection)) {
+        $default = $this->defaultSchema($connection);
+
+        if ($schema !== null && $default !== null && ($this->foldsSchemaCase($connection) ? strcasecmp($schema, $default) === 0 : $schema === $default)) {
             $schema = null;
         }
 
@@ -399,7 +436,45 @@ final class ForeignKeyInspector
      */
     private function identityKey(Connection $connection, array $identity): string
     {
-        return $connection->getName().'.'.($identity[0] === null ? '' : $identity[0].'.').$identity[1];
+        [$schema, $table] = $identity;
+
+        if ($schema !== null && $this->foldsSchemaCase($connection)) {
+            $schema = strtolower($schema);
+        }
+
+        if ($this->foldsTableCase($connection)) {
+            $table = strtolower($table);
+        }
+
+        return $connection->getName().'.'.($schema === null ? '' : $schema.'.').$table;
+    }
+
+    /**
+     * SQLite compares table names without regard to case. MySQL and MariaDB
+     * do so only with lower_case_table_names set, so their table names are
+     * compared as listed (with that setting the server lists them in lower
+     * case already).
+     */
+    private function foldsTableCase(Connection $connection): bool
+    {
+        return $connection instanceof SQLiteConnection;
+    }
+
+    /**
+     * SQLite schema names, and MySQL and MariaDB database names: a server
+     * with lower_case_table_names set lists a database created as
+     * "PiiMixed" as "piimixed", while the connection reports the configured
+     * "PiiMixed".
+     */
+    private function foldsSchemaCase(Connection $connection): bool
+    {
+        return $connection instanceof SQLiteConnection || $connection instanceof MySqlConnection;
+    }
+
+    /** SQLite, MySQL and MariaDB compare column names without regard to case. */
+    private function foldsColumnCase(Connection $connection): bool
+    {
+        return $connection instanceof SQLiteConnection || $connection instanceof MySqlConnection;
     }
 
     /**

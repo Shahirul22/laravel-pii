@@ -45,8 +45,14 @@ final class PagingKeyResolver
         // Source 1: schema primary key (composite-aware), or the model's
         // own declared key name when it is present in the table's columns.
         $pk = $this->unique->primaryKey($table, $conn);
+        $driver = $target->getConnection()->getDriverName();
 
-        if ($pk !== null && $pk !== [] && array_intersect($pk, $fields) === []) {
+        // The first column refused for its type in sources 1 to 3, named in
+        // the boot error when no source resolves.
+        /** @var array{column: string, reason: string}|null $refused */
+        $refused = null;
+
+        if ($pk !== null && $pk !== [] && array_intersect($pk, $fields) === [] && $this->hasIdentityTypes($pk, $schema, $driver, $refused)) {
             return new PagingKey($pk, 'primary');
         }
 
@@ -60,7 +66,7 @@ final class PagingKeyResolver
         // same NOT NULL check and uniqueness probe as a declared key;
         // otherwise resolution falls through.
         // @phpstan-ignore function.alreadyNarrowedType (getKeyName() can be null for a TableRow with $primaryKey = null, despite its string PHPDoc)
-        if (is_string($keyName) && $keyName !== '' && $this->isEligible([$keyName], $schema, $fields) && $this->isProvenUnique($target, [$keyName])) {
+        if (is_string($keyName) && $keyName !== '' && $this->isEligible([$keyName], $schema, $fields) && $this->hasIdentityTypes([$keyName], $schema, $driver, $refused) && $this->isProvenUnique($target, [$keyName])) {
             return new PagingKey([$keyName], 'model-key');
         }
 
@@ -70,7 +76,7 @@ final class PagingKeyResolver
         // columns unique only for some rows, or not at all. So the index is
         // only a candidate, and the uniqueness probe decides.
         foreach ($this->unique->uniqueConstraints($table, $conn) as $tuple) {
-            if ($tuple !== [] && $this->isEligible($tuple, $schema, $fields) && $this->isProvenUnique($target, $tuple)) {
+            if ($tuple !== [] && $this->isEligible($tuple, $schema, $fields) && $this->hasIdentityTypes($tuple, $schema, $driver, $refused) && $this->isProvenUnique($target, $tuple)) {
                 return new PagingKey($tuple, 'unique');
             }
         }
@@ -79,14 +85,15 @@ final class PagingKeyResolver
         // NULL/disjoint from fields() before being trusted.
         $declared = $sanitizer->pagingKey();
 
-        if ($declared !== [] && $this->isEligible($declared, $schema, $fields) && $this->isProvenUnique($target, $declared)) {
+        if ($declared !== [] && $this->isEligible($declared, $schema, $fields) && $this->hasIdentityTypes($declared, $schema, $driver, $refused) && $this->isProvenUnique($target, $declared)) {
             return new PagingKey($declared, 'declared');
         }
 
         // Source 4: every NOT NULL column not in fields() of a family whose
-        // equality and ordering are reliable on every driver. json, binary
-        // and decimal are left out, and so is every type the package does
-        // not know (family 'other', such as a PostgreSQL point or xml).
+        // equality and ordering are reliable on every driver. json, binary,
+        // decimal and a MySQL or MariaDB enum are left out, and so is every
+        // type the package does not know (family 'other', such as a
+        // PostgreSQL point or xml).
         $fallback = [];
 
         foreach ($schema as $column => $constraints) {
@@ -95,6 +102,12 @@ final class PagingKeyResolver
             }
 
             if (! in_array($constraints->family, self::FALLBACK_FAMILIES, true)) {
+                $reason = $this->identityTypeRefusal($constraints, $driver);
+
+                if ($reason !== null) {
+                    $refused ??= ['column' => $column, 'reason' => $reason];
+                }
+
                 continue;
             }
 
@@ -118,6 +131,10 @@ final class PagingKeyResolver
             throw UnpageableTableException::optedInPrimaryKey($target::class, $table, $sanitizer::class, $optedIn[0]);
         }
 
+        if ($refused !== null) {
+            throw UnpageableTableException::unsupportedIdentityType($target::class, $table, $sanitizer::class, $refused['column'], $refused['reason']);
+        }
+
         throw UnpageableTableException::noStableIdentity($target::class, $table, $sanitizer::class);
     }
 
@@ -137,6 +154,59 @@ final class PagingKeyResolver
         }
 
         return true;
+    }
+
+    /**
+     * Every column is of a type that can be paged on: its value, read back,
+     * binds back to the same row, and the database orders and compares it
+     * the same way. Records the first refused column in $refused.
+     *
+     * @param  list<string>  $columns
+     * @param  array<string, ColumnConstraints>  $schema
+     * @param  array{column: string, reason: string}|null  $refused
+     */
+    private function hasIdentityTypes(array $columns, array $schema, string $driver, ?array &$refused): bool
+    {
+        foreach ($columns as $column) {
+            $reason = isset($schema[$column]) ? $this->identityTypeRefusal($schema[$column], $driver) : null;
+
+            if ($reason !== null) {
+                $refused ??= ['column' => $column, 'reason' => $reason];
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Why a column cannot be part of a paging identity on this driver, or
+     * null when it can:
+     *
+     * - binary on PostgreSQL and SQLite: PDO returns a bytea value as a
+     *   stream, and SQLite binds a blob back as text, which never equals a
+     *   blob, so the UPDATE matches no row and the next page repeats.
+     * - ENUM on MySQL and MariaDB: ORDER BY sorts it by member position,
+     *   while the key-set filter compares it as text, so pages skip rows.
+     * - single-precision FLOAT on MySQL and MariaDB: it is read back as a
+     *   rounded double that never equals the stored 4-byte value.
+     */
+    private function identityTypeRefusal(ColumnConstraints $constraints, string $driver): ?string
+    {
+        if ($constraints->family === 'binary' && in_array($driver, ['pgsql', 'sqlite'], true)) {
+            return 'is binary, and its value cannot be bound back to find the same row on this database.';
+        }
+
+        if ($constraints->family === 'enum') {
+            return 'is an ENUM, which MySQL and MariaDB sort by member position but compare as text, so key-set pages would skip and repeat rows.';
+        }
+
+        if (in_array($driver, ['mysql', 'mariadb'], true) && preg_match('/^float\b/i', (string) $constraints->nativeType) === 1) {
+            return 'is a single-precision FLOAT, which MySQL and MariaDB return as a rounded value that never equals the stored one.';
+        }
+
+        return null;
     }
 
     /**

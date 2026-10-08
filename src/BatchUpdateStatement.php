@@ -17,6 +17,11 @@ use Illuminate\Database\Grammar;
  * with the type the schema reports for that column. Every other driver gets
  * the unchanged bare `?`.
  *
+ * MySQL and MariaDB set a column declared `ON UPDATE CURRENT_TIMESTAMP` to
+ * the current time on any UPDATE of its row that does not assign it. Such a
+ * column, when it is not one of fields(), is assigned to itself so it keeps
+ * the value it had.
+ *
  * Internal to the package.
  */
 final class BatchUpdateStatement
@@ -26,11 +31,19 @@ final class BatchUpdateStatement
      * @param  list<string>  $columns
      * @param  list<array{identity: array<string, mixed>, values: array<string, mixed>}>  $rowsToWrite
      * @param  array<string, string>  $valueTypes  column => SQL type to cast each bound value to
+     * @param  list<string>  $keepColumns  columns the database would rewrite on any UPDATE (MySQL's ON UPDATE CURRENT_TIMESTAMP), each assigned to itself so it keeps its value; a column in $columns is written as usual
      * @return array{0: string, 1: list<mixed>}
      */
-    public static function build(Grammar $grammar, string $table, array $identityColumns, array $columns, array $rowsToWrite, array $valueTypes = []): array
+    public static function build(Grammar $grammar, string $table, array $identityColumns, array $columns, array $rowsToWrite, array $valueTypes = [], array $keepColumns = []): array
     {
         $wrappedTable = $grammar->wrapTable($table);
+        $keepClauses = [];
+
+        foreach ($keepColumns as $column) {
+            if (! in_array($column, $columns, true)) {
+                $keepClauses[] = $grammar->wrap($column).' = '.$grammar->wrap($column);
+            }
+        }
 
         if (count($identityColumns) === 1) {
             $id = $identityColumns[0];
@@ -63,7 +76,7 @@ final class BatchUpdateStatement
             $sql = sprintf(
                 'UPDATE %s SET %s WHERE %s IN (%s)',
                 $wrappedTable,
-                implode(', ', $setClauses),
+                implode(', ', [...$setClauses, ...$keepClauses]),
                 $wrappedId,
                 $placeholders
             );
@@ -115,7 +128,7 @@ final class BatchUpdateStatement
         $sql = sprintf(
             'UPDATE %s SET %s WHERE %s',
             $wrappedTable,
-            implode(', ', $setClauses),
+            implode(', ', [...$setClauses, ...$keepClauses]),
             implode(' OR ', $orClauses)
         );
 
@@ -155,9 +168,12 @@ final class BatchUpdateStatement
      * (`character varying(20)` becomes `character varying`, `numeric(8,2)`
      * becomes `numeric`), because an explicit cast to a length silently
      * truncates; the column's own assignment then checks the length or
-     * rounds exactly as it would for a plain bound value. A quoted type name
-     * is kept as it is. Anything that is not a plain type name gives null,
-     * and the value is then bound without a cast.
+     * rounds exactly as it would for a plain bound value. Two types mean
+     * length 1 without their length (`character` is character(1), `bit` is
+     * bit(1)), so they are cast to their unbounded forms instead: `bpchar`
+     * and `bit varying`, which the column then checks the same way. A quoted
+     * type name is kept as it is. Anything that is not a plain type name
+     * gives null, and the value is then bound without a cast.
      */
     public static function postgresCastType(string $type): ?string
     {
@@ -165,6 +181,7 @@ final class BatchUpdateStatement
 
         if (! str_contains($type, '"')) {
             $type = trim((string) preg_replace(['/\(\s*\d+\s*(?:,\s*\d+\s*)?\)/', '/\s+/'], ['', ' '], $type));
+            $type = (string) preg_replace(['/^(?:character|char)((?:\[\])*)$/i', '/^bit((?:\[\])*)$/i'], ['bpchar$1', 'bit varying$1'], $type);
         }
 
         if (preg_match('/^(?:[A-Za-z_][A-Za-z0-9_$ ]*|"[^"]+")(?:\.(?:[A-Za-z_][A-Za-z0-9_$]*|"[^"]+"))?(?:\[\])*$/', $type) !== 1) {

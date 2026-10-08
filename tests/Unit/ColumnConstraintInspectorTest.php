@@ -36,7 +36,7 @@ it('parses MySQL/MariaDB column types', function (string $driver) {
     expect($result['code']->family)->toBe('string');
     expect($result['code']->maxLength)->toBe(255);
     expect($result['short']->maxLength)->toBe(2);
-    expect($result['status']->family)->toBe('string');
+    expect($result['status']->family)->toBe('enum');
     expect($result['status']->allowed)->toBe(['a', 'b', "it's"]);
     expect($result['flags']->family)->toBe('set');
     expect($result['flags']->allowed)->toBe(['x', 'y']);
@@ -211,7 +211,7 @@ it('keeps the case of MySQL/MariaDB enum and set members (BUG-2)', function (str
         ccMysqlColumn('flags', "set('A','B')", 'set'),
     ]);
 
-    expect($result['role']->family)->toBe('string');
+    expect($result['role']->family)->toBe('enum');
     expect($result['role']->allowed)->toBe(['Admin', 'User']);
     expect($result['flags']->family)->toBe('set');
     expect($result['flags']->allowed)->toBe(['A', 'B']);
@@ -258,3 +258,40 @@ it('keeps a real boolean column to booleans and 0/1 (BUG-41)', function () {
     expect(fn () => $validator->assertWritable('App\\Models\\User', 'users', $flag, 2))
         ->toThrow(ConstraintViolationException::class);
 });
+
+it('gives a PostgreSQL array of a sized string type no length limit, leaving each element to the database (BUG-26)', function () {
+    $inspector = app(ColumnConstraintInspector::class);
+    $validator = new ConstraintValidator;
+
+    $result = $inspector->parse('pgsql', [
+        ['name' => 'va', 'type_name' => '_varchar', 'type' => 'character varying(5)[]', 'nullable' => true],
+        ['name' => 'ca', 'type_name' => '_bpchar', 'type' => 'character(3)[]', 'nullable' => true],
+        ['name' => 'vm', 'type_name' => '_varchar', 'type' => 'character varying(5)[][]', 'nullable' => true],
+        ['name' => 'code', 'type_name' => 'varchar', 'type' => 'character varying(5)', 'nullable' => true],
+        ['name' => 'short', 'type_name' => 'bpchar', 'type' => 'character(3)', 'nullable' => true],
+    ]);
+
+    expect($result['va']->maxLength)->toBeNull();
+    expect($result['ca']->maxLength)->toBeNull();
+    expect($result['vm']->maxLength)->toBeNull();
+    expect($result['code']->maxLength)->toBe(5);
+    expect($result['short']->maxLength)->toBe(3);
+
+    $validator->assertWritable('App\\Models\\User', 'users', $result['va'], '{abc,def}');
+});
+
+it('gives a MySQL/MariaDB enum column its own family, still checked as a scalar in its allowed set (BUG-20)', function (string $driver) {
+    $inspector = app(ColumnConstraintInspector::class);
+    $validator = new ConstraintValidator;
+
+    $role = $inspector->parse($driver, [ccMysqlColumn('role', "enum('viewer','admin')", 'enum', false)])['role'];
+
+    expect($role->family)->toBe('enum');
+
+    $validator->assertWritable('App\\Models\\User', 'users', $role, 'admin');
+
+    foreach (['editor', new DateTimeImmutable('2024-01-01'), null] as $bad) {
+        expect(fn () => $validator->assertWritable('App\\Models\\User', 'users', $role, $bad))
+            ->toThrow(ConstraintViolationException::class);
+    }
+})->with(['mysql', 'mariadb']);

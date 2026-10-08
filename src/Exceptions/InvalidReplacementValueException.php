@@ -39,6 +39,13 @@ final class InvalidReplacementValueException extends \RuntimeException
         );
     }
 
+    public static function nulByteJsonKey(): self
+    {
+        return new self(
+            '[laravel-pii-sanitizer] The column value is a JSON document with an object key that starts with a NUL byte (\\u0000), which PHP cannot decode into an object, so its declared paths cannot be rewritten without changing the document. Give the column an array or json cast, which decodes it as an array, or remove that key.'
+        );
+    }
+
     public static function unsupportedJsonCarrier(string $type): self
     {
         return new self(

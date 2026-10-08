@@ -83,6 +83,12 @@ class SanitizerResolver implements SanitizerResolverContract
      */
     private function make(string $sanitizerClass, Model|string $model): Sanitizer
     {
+        // A missing class would otherwise surface as the container's raw
+        // BindingResolutionException.
+        if (! class_exists($sanitizerClass) && ! app()->bound($sanitizerClass)) {
+            throw InvalidConfigurationException::invalidSanitizerClass($sanitizerClass);
+        }
+
         $instance = app($sanitizerClass);
 
         if (! $instance instanceof Sanitizer) {

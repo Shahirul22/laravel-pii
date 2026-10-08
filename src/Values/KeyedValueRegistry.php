@@ -12,7 +12,7 @@ use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
 /**
  * Run-scoped state behind Keyed collision resolution. The runner calls
  * register() for every target in its registration pass, before any row is
- * read, and reset() at the top of each run.
+ * read, and reset() at the start and at the end of each run.
  *
  * register() only collects declarations: the shape signature and the
  * (connection, table, column) bindings of each namespace. There is no
@@ -26,8 +26,12 @@ use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
  *
  * Memory is O(distinct inputs per unique-bound namespace) for the memo plus
  * O(distinct originals per unique-bound binding) for the forbidden set, the
- * same order as v1's UniqueValueTracker seeding. Inputs are held only as
- * 16-byte keyed digests, never as plaintext.
+ * same order as v1's UniqueValueTracker seeding. The memo holds inputs only
+ * as 16-byte keyed digests, but the forbidden set holds the original values
+ * of unique-bound columns as plaintext (lowercased, see comparisonKey()), the
+ * assigned outputs are plaintext replacements, and the decoded key is cached.
+ * All of it lives only for one run: the runner calls reset() at the start of
+ * run() and again when the run ends, whether it completed or threw.
  *
  * All comparisons use comparisonKey(): the lowercased string form, so an
  * integer column (123 versus '123') and a case-insensitive collation (AB12

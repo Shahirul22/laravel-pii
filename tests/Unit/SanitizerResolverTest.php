@@ -228,4 +228,18 @@ namespace {
         expect($resolver->resolve(ResolverConventionUser::class))
             ->toBeInstanceOf(ResolverConventionUserSanitizer::class);
     });
+
+    it('throws the invalid-sanitizer error for a pii.sanitizers or pii.tables class that does not exist (BUG-43)', function () {
+        $typo = 'App\\Sanitizers\\ResolverTypoSanitizer';
+
+        config()->set('pii.sanitizers', [ResolverFakeUser::class => $typo]);
+        config()->set('pii.tables', ['resolver_rows' => $typo]);
+
+        $resolver = new SanitizerResolver(new ResolverNullSchemaGuard, new ResolverNullDataQualityGuard);
+
+        expect(fn () => $resolver->resolve(ResolverFakeUser::class))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo)->getMessage());
+        expect(fn () => $resolver->resolveTable('resolver_rows'))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidSanitizerClass($typo)->getMessage());
+    });
 }

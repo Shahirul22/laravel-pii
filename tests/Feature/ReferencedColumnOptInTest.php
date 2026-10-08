@@ -51,6 +51,21 @@ namespace {
         public $timestamps = false;
     }
 
+    class RefBareCustomerAlias extends Model
+    {
+        protected $table = 'ref_bare_customers';
+
+        protected $primaryKey = 'nric';
+
+        protected $keyType = 'string';
+
+        public $incrementing = false;
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
     class RefAudit extends Model
     {
         protected $table = 'ref_audits';
@@ -173,6 +188,19 @@ namespace {
 
         /** @var array<string, list<string>> */
         public static array $mirrors = [];
+    }
+
+    class RefBareCustomerAliasSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['nric' => refK()];
+        }
+
+        public function mirrors(): array
+        {
+            return ['nric' => ['ref_tickets.holder_nric']];
+        }
     }
 
     class RefTicketAliasSanitizer extends Sanitizer
@@ -597,6 +625,24 @@ namespace {
         expect(refDataReads())->toBe([]);
     });
 
+    it('check 4: rejects a mirrors() source column declared by more than one target (BUG-32)', function () {
+        // No target lists ref_bare_customers.nric as a mirror, so only the
+        // source-side check can catch the second declaration.
+        $map = [
+            RefBareCustomer::class => RefBareCustomerSanitizer::class,
+            RefBareCustomerAlias::class => RefBareCustomerAliasSanitizer::class,
+            RefTicket::class => RefTicketSanitizer::class,
+        ];
+
+        refStartLog();
+
+        [$class, $messages] = refThrownBy($map);
+
+        expect($class)->toBe(InvalidConfigurationException::class);
+        expect($messages[0])->toBe(InvalidConfigurationException::mirrorAmbiguous('ref_bare_customers.nric')->getMessage());
+        expect(refDataReads())->toBe([]);
+    });
+
     it('check 5: rejects mirrors that use different Keyed namespaces', function () {
         RefTicketSanitizer::$fields = ['holder_nric' => Keyed::pattern('other-ns', '######-##-####')];
 
@@ -795,5 +841,40 @@ namespace {
         $this->artisan('pii:sanitize')
             ->doesntExpectOutputToContain('Foreign-key enforcement was suspended')
             ->assertExitCode(0);
+    });
+
+    it('runs a Keyed unique column and its mirror group twice without reseeding, staying unique and consistent (BUG-22)', function () {
+        refEnforce();
+
+        $runs = [];
+
+        foreach ([1, 2] as $run) {
+            $report = refRun(refHappyMap());
+
+            expect($report->failed())->toBeFalse();
+            expect($report->foreignKeysSuspended)->toBeTrue();
+
+            $customers = DB::table('ref_customers')->orderBy('id')->pluck('nric', 'id')->all();
+            $orders = DB::table('ref_orders')->orderBy('id')->pluck('customer_nric', 'id')->all();
+            $tickets = DB::table('ref_tickets')->orderBy('id')->pluck('holder_nric', 'id')->all();
+
+            expect(array_unique($customers))->toHaveCount(3);
+
+            foreach ($customers as $nric) {
+                expect($nric)->toMatch('/^\d{6}-\d{2}-\d{4}$/');
+            }
+
+            // Orders hold C-1, C-1, C-2, NULL; tickets hold C-1, C-3, X-9, NULL.
+            expect($orders)->toBe([1 => $customers[1], 2 => $customers[1], 3 => $customers[2], 4 => null]);
+            expect([$tickets[1], $tickets[2], $tickets[4]])->toBe([$customers[1], $customers[3], null]);
+            expect(DB::select('PRAGMA foreign_key_check'))->toBe([]);
+            expect(refFkOn())->toBe(1);
+
+            $runs[$run] = $customers;
+        }
+
+        foreach ($runs[2] as $id => $nric) {
+            expect($nric)->not->toBe($runs[1][$id]);
+        }
     });
 }

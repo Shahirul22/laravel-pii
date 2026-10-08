@@ -306,15 +306,21 @@ namespace {
         }
     });
 
-    it('performs no queries when fields() is empty', function () {
+    it('rejects an empty fields() before any query (BUG-9)', function () {
         $guard = app(SchemaGuard::class);
 
         DB::flushQueryLog();
         DB::enableQueryLog();
 
-        $guard->assertSafe(new GuardEmptySanitizer, GuardUser::class);
+        expect(fn () => $guard->assertSafe(new GuardEmptySanitizer, GuardUser::class))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::emptyFields(GuardEmptySanitizer::class, GuardUser::class, 'guard_users')->getMessage());
 
         expect(DB::getQueryLog())->toBe([]);
+    });
+
+    it('rejects a model class that does not exist with the invalid-model message (BUG-43)', function () {
+        expect(fn () => app(SchemaGuard::class)->assertSafe(new GuardCleanSanitizer, 'App\\Models\\GuardTypo'))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidModelClass('App\\Models\\GuardTypo')->getMessage());
     });
 
     it('accepts a model instance as well as a class-string', function () {

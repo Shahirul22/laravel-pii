@@ -71,6 +71,23 @@ namespace {
         }
     }
 
+    class TxCheckedUser extends Model
+    {
+        protected $table = 'tx_checked_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class TxCheckedUserSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['email' => 'leaked@example.com'];
+        }
+    }
+
     class TxExhaustedUser extends Model
     {
         protected $table = 'tx_exhausted_users';
@@ -93,6 +110,7 @@ namespace {
 
 namespace {
 
+    use Illuminate\Database\QueryException;
     use Illuminate\Support\Facades\DB;
     use Illuminate\Support\Facades\Schema;
     use Shahirul22\LaravelPiiSanitizer\ChunkStatus;
@@ -264,6 +282,33 @@ namespace {
         expect($failedChunk->failureClass)->toBe(UniquenessExhaustedException::class);
         expect($failedChunk->failureMessage)->toContain('email');
         expect($failedChunk->failureMessage)->toContain(TxExhaustedUserSanitizer::class);
-        expect($failedChunk->failureMessage)->not->toContain('database exception during chunk write');
+        expect($failedChunk->failureMessage)->not->toContain('is withheld because it can contain row values');
+    });
+
+    it('withholds an unexpected exception\'s message without promising logs that never receive it (BUG-36)', function () {
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10));
+
+        $failedChunk = $report->models[0]->chunks[1];
+
+        expect($failedChunk->failureMessage)->toBe(RuntimeException::class.': the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.');
+        expect($failedChunk->failureMessage)->not->toContain('log');
+    });
+
+    it('says the database refused the write for a query exception, without its row values (BUG-36)', function () {
+        DB::statement("create table tx_checked_users (id integer primary key autoincrement, email varchar not null check (email not like '%@%'))");
+        DB::table('tx_checked_users')->insert(['email' => 'no-at-sign']);
+
+        config()->set('pii.sanitizers', [TxCheckedUser::class => TxCheckedUserSanitizer::class]);
+        config()->set('pii.models', [TxCheckedUser::class]);
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10));
+
+        $failedChunk = $report->models[0]->chunks[0];
+
+        expect($failedChunk->status)->toBe(ChunkStatus::RolledBack);
+        expect($failedChunk->failureClass)->toBe(QueryException::class);
+        expect($failedChunk->failureMessage)->toBe(QueryException::class.': the database refused the chunk write. Its original message is withheld because it can contain row values.');
+        expect($failedChunk->failureMessage)->not->toContain('leaked@example.com');
+        expect(DB::table('tx_checked_users')->value('email'))->toBe('no-at-sign');
     });
 }

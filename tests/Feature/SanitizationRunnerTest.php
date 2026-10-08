@@ -85,6 +85,14 @@ namespace {
         }
     }
 
+    class RunnerEmptySanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return [];
+        }
+    }
+
     class RunnerNotAModel
     {
         //
@@ -274,12 +282,12 @@ namespace {
         expect($report->models[0]->modelClass)->toBe(RunnerUser::class);
     });
 
-    it('resets the replacement generator exactly once per run', function () {
+    it('resets the replacement generator at the start and again at the end of every run', function () {
         app()->bind(ReplacementGenerator::class, fn ($app) => $app->make(SpyReplacementGenerator::class));
 
         app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10));
 
-        expect(SpyReplacementGenerator::$resetCalls)->toBe(1);
+        expect(SpyReplacementGenerator::$resetCalls)->toBe(2);
     });
 
     it('resets the chunk sizer exactly once per run', function () {
@@ -425,5 +433,29 @@ namespace {
         foreach ($after as $row) {
             expect($row->name)->not->toStartWith('Seed Name');
         }
+    });
+
+    it('throws the invalid-model error for a pii.models or --model class that does not exist (BUG-43)', function (bool $viaOption) {
+        $typo = 'App\\Models\\RunnerTypo';
+
+        if (! $viaOption) {
+            config()->set('pii.models', [$typo]);
+        }
+
+        $options = new RunOptions(models: $viaOption ? [$typo] : null, chunkSize: 10);
+
+        expect(fn () => app(SanitizationRunner::class)->run($options))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidModelClass($typo)->getMessage());
+    })->with(['pii.models' => [false], '--model' => [true]]);
+
+    it('rejects an empty fields() at boot instead of failing the chunk with an empty SET list (BUG-9)', function () {
+        config()->set('pii.sanitizers', [RunnerUser::class => RunnerEmptySanitizer::class]);
+
+        $before = DB::table('runner_users')->orderBy('id')->get()->all();
+
+        expect(fn () => app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10)))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::emptyFields(RunnerEmptySanitizer::class, RunnerUser::class, 'runner_users')->getMessage());
+
+        expect(DB::table('runner_users')->orderBy('id')->get()->all())->toEqual($before);
     });
 }

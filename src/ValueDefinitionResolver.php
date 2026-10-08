@@ -83,6 +83,20 @@ class ValueDefinitionResolver
     }
 
     /**
+     * Whether resolving $definition reads the row's current value: a Closure,
+     * a ValueGenerator instance and a ValueGenerator class-string all receive
+     * it and may use it. A static value and a Faker formatter name never
+     * receive it (resolve() ignores $currentValue for both), so a current
+     * value that cannot be decoded does not matter to them.
+     */
+    public function usesCurrentValue(mixed $definition): bool
+    {
+        return $definition instanceof \Closure
+            || $definition instanceof ValueGenerator
+            || (is_string($definition) && class_exists($definition) && is_subclass_of($definition, ValueGenerator::class));
+    }
+
+    /**
      * Determine whether $name is a resolvable Faker formatter/method name.
      *
      * Faker\Generator dispatches shorthand names (e.g. 'email', 'safeEmail')

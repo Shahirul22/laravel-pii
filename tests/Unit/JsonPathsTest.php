@@ -220,6 +220,17 @@ namespace {
         }
     });
 
+    it('names a NUL-byte object key precisely instead of calling the document invalid (BUG-15)', function () {
+        try {
+            jpRun(Json::paths(['email' => 'x']), '{"\\u0000a":"secret","email":"p@q.r"}');
+            $this->fail('expected an exception');
+        } catch (InvalidReplacementValueException $e) {
+            expect($e->getMessage())->toBe(InvalidReplacementValueException::nulByteJsonKey()->getMessage());
+            expect($e->getMessage())->not->toContain('not a valid JSON document');
+            expect($e->getMessage())->not->toContain('secret');
+        }
+    });
+
     // Errors and resolution
 
     it('rejects an unsupported carrier', function () {

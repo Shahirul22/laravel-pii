@@ -57,4 +57,14 @@ final class InvalidCategoricalColumnException extends \RuntimeException
             "[laravel-pii-sanitizer] {$modelClass}::\${$column} uses a Json::paths() definition and is listed in {$sanitizerClass}::categorical(). Sampling would replace the whole document with another row's value, so remove it from categorical()."
         );
     }
+
+    /**
+     * @param  class-string  $modelClass
+     */
+    public static function castBearing(string $modelClass, string $column, string $sanitizerClass): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] {$modelClass}::\${$column} has a cast or set mutator and is listed in {$sanitizerClass}::categorical(). A categorical column is sampled from the raw stored values, which the cast would encode a second time (a JSON string inside a JSON string, or a ciphertext encrypted again), so remove it from categorical()."
+        );
+    }
 }

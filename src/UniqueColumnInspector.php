@@ -22,6 +22,16 @@ class UniqueColumnInspector
     ) {}
 
     /**
+     * Forgets every memoized table. Being a singleton, the inspector would
+     * otherwise carry one run's schema into the next run in the same process.
+     */
+    public function reset(): void
+    {
+        $this->constraintCache = [];
+        $this->indexCache = [];
+    }
+
+    /**
      * Every unique-or-primary constraint on the table, as its ordered
      * column tuple. A single-column constraint is a one-element tuple.
      * Memoized per (connection, table) for the instance lifetime.

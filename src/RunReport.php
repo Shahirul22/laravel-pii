@@ -39,6 +39,7 @@ final class RunReport
         return [
             'dryRun' => $this->dryRun,
             'foreignKeysSuspended' => $this->foreignKeysSuspended,
+            'triggersSuspended' => $this->triggersSuspended,
             'models' => array_map(fn (ModelReport $model): array => $model->toArray(), $this->models),
         ];
     }

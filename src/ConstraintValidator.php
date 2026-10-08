@@ -25,7 +25,7 @@ final class ConstraintValidator
             return;
         }
 
-        if (! $this->matchesFamily($constraints->family, $value)) {
+        if (! $this->matchesFamily($constraints, $value)) {
             throw ConstraintViolationException::typeMismatch($modelClass, $constraints->column, $table, $constraints->family);
         }
 
@@ -64,16 +64,42 @@ final class ConstraintValidator
         return json_last_error() === JSON_ERROR_NONE;
     }
 
-    private function matchesFamily(string $family, mixed $value): bool
+    private function matchesFamily(ColumnConstraints $constraints, mixed $value): bool
     {
-        return match ($family) {
-            'integer' => is_int($value) || (is_string($value) && preg_match('/^-?\d+$/', $value) === 1),
+        return match ($constraints->family) {
+            'integer' => $this->isInteger($value),
             'decimal' => is_int($value) || is_float($value) || (is_string($value) && is_numeric($value)),
-            'boolean' => is_bool($value) || in_array($value, [0, 1, '0', '1'], true),
+            'boolean' => is_bool($value) || in_array($value, [0, 1, '0', '1'], true) || $this->fitsTinyintOne($constraints, $value),
             'datetime' => is_string($value) || is_int($value),
             'json' => is_array($value) || (is_string($value) && $this->isValidJson($value)),
             'string', 'set' => is_scalar($value),
             default => true,
         };
+    }
+
+    private function isInteger(mixed $value): bool
+    {
+        return is_int($value) || (is_string($value) && preg_match('/^-?\d+$/', $value) === 1);
+    }
+
+    /**
+     * MySQL and MariaDB report a BOOLEAN column as tinyint(1), so the schema
+     * cannot tell a boolean from a legacy tinyint(1) that stores small codes
+     * (0, 1, 2, ...): the display width (1) does not limit the stored value.
+     * The rule: a column whose native type is exactly tinyint(1) accepts a
+     * boolean and also any integer in the signed tinyint range -128 to 127,
+     * which is everything the database itself accepts there. A real boolean
+     * type (PostgreSQL boolean, for example) still accepts only booleans and
+     * 0/1.
+     */
+    private function fitsTinyintOne(ColumnConstraints $constraints, mixed $value): bool
+    {
+        if ($constraints->nativeType === null || strtolower($constraints->nativeType) !== 'tinyint(1)' || ! $this->isInteger($value)) {
+            return false;
+        }
+
+        $integer = (int) $value;
+
+        return $integer >= -128 && $integer <= 127;
     }
 }

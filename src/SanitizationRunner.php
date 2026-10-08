@@ -6,9 +6,11 @@ use Faker\Generator;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Shahirul22\LaravelPiiSanitizer\Contracts\EnvironmentGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
+use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\ConstraintViolationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
@@ -42,6 +44,9 @@ final class SanitizationRunner
         private readonly KeyedValueRegistry $keyed,
         private readonly ReferencedColumnGuard $referenced,
         private readonly ForeignKeySuspender $suspender,
+        private readonly SchemaGuardContract $schemaGuard,
+        private readonly UniqueColumnInspector $uniqueInspector,
+        private readonly ForeignKeyInspector $foreignKeys,
     ) {}
 
     /** Walks every configured target; never throws for a mid-chunk failure. */
@@ -49,10 +54,52 @@ final class SanitizationRunner
     {
         $this->guard->assertRunnable($options);
 
-        $this->generator->reset();
-        $this->keyed->reset();
+        $this->resetSchemaMetadata();
+        $this->resetRunData();
         $this->sizer->reset();
 
+        try {
+            return $this->runTargets($options);
+        } finally {
+            // Cleared again on the way out, whether the run completed or an
+            // exception escaped: the keyed registry holds the decoded key and
+            // the plaintext originals of unique-bound Keyed columns, and the
+            // generator's uniqueness tracker and distribution sampler hold
+            // original values too. None of it may outlive the run in a
+            // long-lived process (a queue worker, Octane, tinker).
+            $this->resetRunData();
+        }
+    }
+
+    /**
+     * Clears the run-scoped state that holds data: the generator's tracker
+     * and sampler, and the keyed registry (key, originals, assignments).
+     */
+    private function resetRunData(): void
+    {
+        $this->generator->reset();
+        $this->keyed->reset();
+    }
+
+    /**
+     * Clears the schema metadata the container singletons memoize, so a
+     * schema change between two runs in one process (a foreign key, a
+     * column, a unique index, a constraint) is seen by the second run.
+     */
+    private function resetSchemaMetadata(): void
+    {
+        if ($this->schemaGuard instanceof SchemaGuard) {
+            $this->schemaGuard->reset();
+        }
+
+        $this->constraintInspector->reset();
+        $this->uniqueInspector->reset();
+        $this->foreignKeys->reset();
+    }
+
+    /** The body of run(), between the resets. */
+    private function runTargets(RunOptions $options): RunReport
+    {
         $rawModelClasses = $options->models ?? config('pii.models', []);
 
         if (! is_array($rawModelClasses)) {
@@ -104,6 +151,12 @@ final class SanitizationRunner
         $targets = [];
 
         foreach ($modelClasses as $modelClass) {
+            // A mistyped class would otherwise surface as the container's raw
+            // BindingResolutionException.
+            if (! class_exists($modelClass) && ! app()->bound($modelClass)) {
+                throw InvalidConfigurationException::invalidModelClass($modelClass);
+            }
+
             $model = app($modelClass);
 
             if (! $model instanceof Model) {
@@ -477,7 +530,7 @@ final class SanitizationRunner
                 // (pre-encode) value against the row's current cast-decoded
                 // attribute — a reporting concern, not a storage concern.
                 foreach ($values as $column => $value) {
-                    if ($value !== $row->getAttribute($column)) {
+                    if (! self::equalsCurrentValue($row, $column, $value)) {
                         $chunkColumnCounts[$column] = ($chunkColumnCounts[$column] ?? 0) + 1;
                     }
                 }
@@ -557,10 +610,13 @@ final class SanitizationRunner
                 lastKey: $lastKey,
                 // Store a redacted, generic failure reason rather than the raw
                 // exception message: DB driver exceptions can embed bound
-                // values or row fragments (e.g. duplicate-key messages), which
-                // could leak real PII into a report/log surfaced by the
-                // artisan command.
-                failureMessage: sprintf('%s: database exception during chunk write — see application logs for detail.', $e::class),
+                // values or row fragments (e.g. duplicate-key messages), and a
+                // user closure's exception can carry anything, which could
+                // leak real PII into a report surfaced by the artisan command.
+                // The exception is deliberately not logged either (a log
+                // would hold the same row values), so the message promises no
+                // log; only the exception class is kept.
+                failureMessage: self::withheldFailureMessage($e),
                 failureClass: $e::class,
             );
         }
@@ -572,6 +628,35 @@ final class SanitizationRunner
             firstKey: $firstKey,
             lastKey: $lastKey,
         );
+    }
+
+    /**
+     * Whether $value is the row's current cast-decoded value of $column. A
+     * stored value its cast cannot decode (see
+     * ReplacementGenerator::currentValue()) is being replaced by a readable
+     * one, so it counts as changed instead of failing the chunk.
+     */
+    private static function equalsCurrentValue(Model $row, string $column, mixed $value): bool
+    {
+        try {
+            return $value === $row->getAttribute($column);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * The redacted failure reason for an exception that is not one of the
+     * package's own named exceptions: its class, and what kind of failure it
+     * was, never its message.
+     */
+    private static function withheldFailureMessage(\Throwable $e): string
+    {
+        if ($e instanceof QueryException || $e instanceof \PDOException) {
+            return sprintf('%s: the database refused the chunk write. Its original message is withheld because it can contain row values.', $e::class);
+        }
+
+        return sprintf('%s: the chunk failed with an unexpected exception. Its message is withheld because it can contain row values.', $e::class);
     }
 
     /**

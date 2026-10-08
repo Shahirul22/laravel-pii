@@ -98,12 +98,21 @@ class UniqueValueTracker
      * separator, so members containing the separator itself never collide,
      * and null/'1'/1/true remain distinguishable.
      *
+     * A string member is lowercased first (mb_strtolower, the same rule as
+     * KeyedValueRegistry::comparisonKey()), because a case-insensitive
+     * collation such as MySQL's utf8mb4_unicode_ci treats 'KAREN' and
+     * 'karen' as the same unique value. On a case-sensitive collation this
+     * only costs a retry for a value that differs from another in case alone.
+     * Collations that also fold accents or trailing spaces are not covered.
+     *
      * @param  list<mixed>  $values
      */
     private function tupleKey(array $values): string
     {
         return implode("\x1f", array_map(
-            static fn (mixed $value): string => (string) json_encode($value),
+            static fn (mixed $value): string => (string) json_encode(
+                is_string($value) && mb_check_encoding($value, 'UTF-8') ? mb_strtolower($value, 'UTF-8') : $value
+            ),
             $values
         ));
     }

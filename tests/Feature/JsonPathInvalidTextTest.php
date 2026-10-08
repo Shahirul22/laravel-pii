@@ -165,4 +165,28 @@ namespace {
         expect($chunk->failureMessage)->toContain('the replacement value is null but the column is NOT NULL (nullability constraint)');
         expect(DB::table('jp_invalid_required')->where('id', 1)->value('settings'))->toBe('null');
     });
+
+    it('skips every path of a cast column whose stored document is a bare scalar (BUG-15)', function (string $settings, string $blob, string $vault, mixed $decoded) {
+        DB::table('jp_invalid_docs')->insert(['id' => 2, 'settings' => $settings, 'blob' => $blob, 'vault' => Crypt::encryptString($vault)]);
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 10));
+
+        expect($report->failed())->toBeFalse();
+
+        $row = JpInvalidDoc::find(2);
+
+        expect($row->settings)->toBe($decoded);
+        expect($row->blob)->toBe($decoded);
+        expect($row->vault)->toBe($decoded);
+        expect(DB::table('jp_invalid_docs')->where('id', 2)->value('settings'))->toBe($settings);
+        expect(JpInvalidDoc::find(1)->settings)->toBe(['profile' => ['email' => 'x@example.test']]);
+        expect(JpInvalidDoc::find(1)->vault)->toBe(['ic' => '000000-00-0000']);
+    })->with([
+        'integer' => ['5', '5', '5', 5],
+        'true' => ['true', 'true', 'true', true],
+        'false' => ['false', 'false', 'false', false],
+        'float' => ['1.5', '1.5', '1.5', 1.5],
+        'string' => ['"hello"', '"hello"', '"hello"', 'hello'],
+        'string holding JSON text' => ['"{\\"profile\\":{\\"email\\":\\"p@q.r\\"},\\"ic\\":\\"900101-14-5678\\"}"', '"{\\"profile\\":{\\"email\\":\\"p@q.r\\"},\\"ic\\":\\"900101-14-5678\\"}"', '"{\\"profile\\":{\\"email\\":\\"p@q.r\\"},\\"ic\\":\\"900101-14-5678\\"}"', '{"profile":{"email":"p@q.r"},"ic":"900101-14-5678"}'],
+    ]);
 }

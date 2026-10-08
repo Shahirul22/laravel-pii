@@ -220,3 +220,13 @@ it('defaults triggersSuspended to false and keeps the positional constructions',
     expect((new RunReport([], false, true))->triggersSuspended)->toBeFalse();
     expect((new RunReport([], false, true, true))->triggersSuspended)->toBeTrue();
 });
+
+it('carries triggersSuspended in its array form (BUG-37)', function () {
+    $suspended = new RunReport(models: [], dryRun: false, foreignKeysSuspended: true, triggersSuspended: true);
+    $default = new RunReport(models: [], dryRun: false);
+
+    expect($suspended->toArray())->toHaveKey('triggersSuspended');
+    expect($suspended->toArray()['triggersSuspended'])->toBeTrue();
+    expect($default->toArray()['triggersSuspended'])->toBeFalse();
+    expect(array_keys($suspended->toArray()))->toBe(['dryRun', 'foreignKeysSuspended', 'triggersSuspended', 'models']);
+});

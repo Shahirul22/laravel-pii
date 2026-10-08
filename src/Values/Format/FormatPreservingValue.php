@@ -36,7 +36,7 @@ abstract class FormatPreservingValue extends RandomizedValue
      * @throws InvalidReplacementValueException for an unsupported input type or invalid UTF-8
      * @throws \LogicException when called with null (the bridge and KeyedResolver never do)
      */
-    final public function generate(mixed $value, Randomizer $random): string
+    final public function generate(#[\SensitiveParameter] mixed $value, Randomizer $random): string
     {
         if ($value === null) {
             throw new \LogicException('[laravel-pii-sanitizer] generate() is never called with null; null is handled by the value-definition bridge.');

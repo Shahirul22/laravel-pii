@@ -23,6 +23,7 @@ class DataQualityGuard implements DataQualityGuardContract
 
     /**
      * @throws InvalidCategoricalColumnException
+     * @throws InvalidConfigurationException
      */
     public function assertValid(Sanitizer $sanitizer, Model|string $model): void
     {
@@ -33,6 +34,11 @@ class DataQualityGuard implements DataQualityGuardContract
         }
 
         $modelClass = is_object($model) ? $model::class : $model;
+
+        if (! is_object($model) && ! class_exists($modelClass) && ! app()->bound($modelClass)) {
+            throw InvalidConfigurationException::invalidModelClass($modelClass);
+        }
+
         $instance = is_object($model) ? $model : app($modelClass);
 
         if (! $instance instanceof Model) {
@@ -63,6 +69,18 @@ class DataQualityGuard implements DataQualityGuardContract
                 if (in_array($column, $constraint, true)) {
                     throw InvalidCategoricalColumnException::uniqueConstrained($modelClass, $column, $sanitizer::class, $table);
                 }
+            }
+        }
+
+        // A categorical value is sampled from the raw stored values
+        // (DistributionSampler reads through the query builder), and the
+        // runner then encodes every cast-bearing column through the model's
+        // cast: the sample would be encoded twice. Checked after the unique
+        // check so a primary key, which carries Eloquent's implicit key cast,
+        // keeps its unique-constraint message.
+        foreach ($categorical as $column) {
+            if ($instance->hasCast($column) || $instance->hasSetMutator($column) || $instance->hasAttributeSetMutator($column)) {
+                throw InvalidCategoricalColumnException::castBearing($modelClass, $column, $sanitizer::class);
             }
         }
     }

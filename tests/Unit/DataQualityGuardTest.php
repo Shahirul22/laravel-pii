@@ -15,6 +15,37 @@ namespace {
         public $timestamps = false;
     }
 
+    class DqGuardCastUser extends Model
+    {
+        protected $table = 'dq_guard_users';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+
+        protected $casts = ['settings' => 'array', 'secret' => 'encrypted'];
+
+        public function setNicknameAttribute(mixed $value): void
+        {
+            $this->attributes['nickname'] = strtoupper((string) $value);
+        }
+    }
+
+    class DqGuardCastSanitizer extends Sanitizer
+    {
+        public static string $column = 'settings';
+
+        public function fields(): array
+        {
+            return [static::$column => 'word'];
+        }
+
+        public function categorical(): array
+        {
+            return [static::$column];
+        }
+    }
+
     class DqGuardCleanSanitizer extends Sanitizer
     {
         public function fields(): array
@@ -237,5 +268,31 @@ namespace {
         }
 
         expect(DB::getQueryLog())->toBe([]);
+    });
+
+    it('rejects a categorical column that has a cast or set mutator, before any row is read (BUG-21)', function (string $column) {
+        DqGuardCastSanitizer::$column = $column;
+
+        Schema::create('dq_guard_users', function ($table) {
+            $table->id();
+            $table->text('settings')->nullable();
+            $table->text('secret')->nullable();
+            $table->string('nickname')->nullable();
+        });
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        expect(fn () => dqGuard()->assertValid(new DqGuardCastSanitizer, DqGuardCastUser::class))
+            ->toThrow(InvalidCategoricalColumnException::class, InvalidCategoricalColumnException::castBearing(DqGuardCastUser::class, $column, DqGuardCastSanitizer::class)->getMessage());
+
+        $dataReads = array_filter(DB::getQueryLog(), fn (array $entry): bool => preg_match('/\bfrom\s+"dq_guard_users"/i', $entry['query']) === 1);
+
+        expect($dataReads)->toBe([]);
+    })->with(['array cast' => ['settings'], 'encrypted cast' => ['secret'], 'set mutator' => ['nickname']]);
+
+    it('rejects a model class that does not exist with the invalid-model message (BUG-43)', function () {
+        expect(fn () => dqGuard()->assertValid(new DqGuardCleanSanitizer, 'App\\Models\\DqTypo'))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::invalidModelClass('App\\Models\\DqTypo')->getMessage());
     });
 }

@@ -25,6 +25,13 @@ final class InvalidConfigurationException extends \RuntimeException
         );
     }
 
+    public static function emptyFields(string $sanitizerClass, string $modelClass, string $table): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] {$sanitizerClass}::fields() is empty, so it declares nothing to sanitize for {$modelClass} on table \"{$table}\". Declare at least one column in fields() (mirrors() only opts in columns that fields() declares), or remove the sanitizer so the target is skipped."
+        );
+    }
+
     public static function tablesNotAMap(): self
     {
         return new self(

@@ -45,7 +45,7 @@ namespace {
 
     /**
      * @param  array<string, mixed>  $fields
-     * @param  array<string, list<string>>  $mirrors
+     * @param  array<string, mixed>  $mirrors
      */
     function sgmSanitizer(array $fields, array $mirrors): Sanitizer
     {
@@ -112,8 +112,17 @@ namespace {
         'empty table' => [true, ['nric' => ['.customer_nric']], 'nric', 'mirror ".customer_nric" is not of the form table.column'],
         'empty column' => [true, ['nric' => ['sgm_orders.']], 'nric', 'mirror "sgm_orders." is not of the form table.column'],
         'names itself' => [true, ['nric' => ['sgm_customers.nric']], 'nric', 'mirror "sgm_customers.nric" names the column itself'],
-        'fields empty' => [false, ['nric' => ['sgm_orders.customer_nric']], 'nric', 'the column is not declared in fields()'],
+        'list is a string (BUG-18)' => [true, ['nric' => 'sgm_orders.customer_nric'], 'nric', 'the mirror list is a string, not a list of "table.column" strings'],
+        'entry is an int (BUG-18)' => [true, ['nric' => [5]], 'nric', 'a mirror entry is an int, not a "table.column" string'],
+        'entry is an array (BUG-18)' => [true, ['nric' => [['sgm_orders.customer_nric']]], 'nric', 'a mirror entry is an array, not a "table.column" string'],
     ]);
+
+    it('gives a mirrors-only sanitizer with an empty fields() the empty-fields error (BUG-9)', function () {
+        $sanitizer = sgmSanitizer([], ['nric' => ['sgm_orders.customer_nric']]);
+
+        expect(fn () => app(SchemaGuard::class)->assertSafe($sanitizer, SgmCustomer::class))
+            ->toThrow(InvalidConfigurationException::class, InvalidConfigurationException::emptyFields($sanitizer::class, SgmCustomer::class, 'sgm_customers')->getMessage());
+    });
 
     it('rejects a mirrors() key that is not a Keyed definition', function () {
         $sanitizer = sgmSanitizer(['nric' => 'name'], ['nric' => ['sgm_orders.customer_nric']]);

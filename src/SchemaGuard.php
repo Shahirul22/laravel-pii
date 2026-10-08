@@ -34,6 +34,15 @@ class SchemaGuard implements SchemaGuardContract
     ) {}
 
     /**
+     * Forgets the memoized column lists. Being a singleton, the guard would
+     * otherwise carry one run's schema into the next run in the same process.
+     */
+    public function reset(): void
+    {
+        $this->columnCache = [];
+    }
+
+    /**
      * @throws UnsafeColumnException
      * @throws InvalidConfigurationException
      * @throws ConstraintViolationException
@@ -41,6 +50,13 @@ class SchemaGuard implements SchemaGuardContract
     public function assertSafe(Sanitizer $sanitizer, Model|string $model): void
     {
         $modelClass = is_object($model) ? $model::class : $model;
+
+        // A missing class would otherwise surface as the container's raw
+        // BindingResolutionException.
+        if (! is_object($model) && ! class_exists($modelClass) && ! app()->bound($modelClass)) {
+            throw InvalidConfigurationException::invalidModelClass($modelClass);
+        }
+
         $instance = is_object($model) ? $model : app($modelClass);
 
         if (! $instance instanceof Model) {
@@ -48,6 +64,15 @@ class SchemaGuard implements SchemaGuardContract
         }
 
         $fields = $sanitizer->fields();
+        $columns = array_keys($fields);
+
+        // An empty fields() would reach the batched UPDATE as an empty SET
+        // list. Checked before the mirror declarations, so a sanitizer that
+        // declares only mirrors() gets this error and not a mirror one.
+        if ($columns === []) {
+            throw InvalidConfigurationException::emptyFields($sanitizer::class, $modelClass, $instance->getTable());
+        }
+
         $mirrors = $sanitizer->mirrors();
 
         $this->assertMirrorDeclarations($sanitizer, $instance, $modelClass, $fields, $mirrors);
@@ -57,12 +82,6 @@ class SchemaGuard implements SchemaGuardContract
         // With mirrors() empty, in_array() is always false and every check
         // runs exactly as in v1 (R1.5).
         $optedIn = array_keys($mirrors);
-
-        $columns = array_keys($fields);
-
-        if ($columns === []) {
-            return;
-        }
 
         $table = $instance->getTable();
         $connection = $this->db->connection($instance->getConnectionName());
@@ -174,8 +193,12 @@ class SchemaGuard implements SchemaGuardContract
     /**
      * Per-target mirror checks 1 and 2 (docs/design/referenced-identifier-structured-column-sanitization/spec, Boot-time checks). Pure: reads declarations only.
      *
+     * The shape of each mirrors() value is checked here too: mirrors() is
+     * declared as array<string, list<string>>, but nothing enforces that at
+     * runtime, so a string or a non-string entry gets a named error.
+     *
      * @param  array<string, mixed>  $fields
-     * @param  array<string, list<string>>  $mirrors
+     * @param  array<array-key, mixed>  $mirrors
      *
      * @throws InvalidConfigurationException
      */
@@ -190,11 +213,19 @@ class SchemaGuard implements SchemaGuardContract
                 throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the column is not declared in fields()');
             }
 
+            if (! is_array($list)) {
+                throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the mirror list is '.self::withArticle(get_debug_type($list)).', not a list of "table.column" strings');
+            }
+
             if ($list === []) {
                 throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'the mirror list is empty');
             }
 
             foreach ($list as $entry) {
+                if (! is_string($entry)) {
+                    throw InvalidConfigurationException::invalidMirrorDeclaration($sanitizer::class, $column, 'a mirror entry is '.self::withArticle(get_debug_type($entry)).', not a "table.column" string');
+                }
+
                 $dot = strrpos($entry, '.');
 
                 if ($dot === false || $dot === 0 || $dot === strlen($entry) - 1) {
@@ -212,6 +243,12 @@ class SchemaGuard implements SchemaGuardContract
                 throw InvalidConfigurationException::mirroredColumnNotKeyed($modelClass, $column, $sanitizer::class);
             }
         }
+    }
+
+    /** "a string", "an int": a type name with its indefinite article. */
+    private static function withArticle(string $type): string
+    {
+        return (preg_match('/^[aeiou]/i', $type) === 1 ? 'an ' : 'a ').$type;
     }
 
     /**

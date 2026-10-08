@@ -23,7 +23,14 @@ use Shahirul22\LaravelPiiSanitizer\ValueDefinitionResolver;
  *
  * A string column value is decoded, patched and re-encoded; an array column
  * value (an array-cast column) is patched and returned as an array. When no
- * path was rewritten the received value is returned unchanged.
+ * path was rewritten the received value is returned unchanged. On an array,
+ * json or encrypted array cast, a document whose root is a scalar is never
+ * passed in: ReplacementGenerator returns the decoded scalar unchanged,
+ * because no path can descend into it.
+ *
+ * A string carrier holding a valid document with an object key that starts
+ * with a NUL byte cannot be decoded into objects; it fails with a message
+ * that says so (InvalidReplacementValueException::nulByteJsonKey()).
  */
 final class JsonPaths implements ValueGenerator
 {
@@ -106,7 +113,14 @@ final class JsonPaths implements ValueGenerator
         if (is_string($value)) {
             try {
                 $tree = json_decode($value, false, 512, JSON_THROW_ON_ERROR);
-            } catch (\JsonException) {
+            } catch (\JsonException $e) {
+                // Valid JSON whose object key starts with a NUL byte: PHP cannot
+                // make it an object property, and decoding to arrays instead
+                // would turn {} into [] on re-encode. Say so precisely.
+                if ($e->getCode() === JSON_ERROR_INVALID_PROPERTY_NAME) {
+                    throw InvalidReplacementValueException::nulByteJsonKey();
+                }
+
                 throw InvalidReplacementValueException::invalidJsonDocument();
             }
 

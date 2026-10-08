@@ -224,7 +224,7 @@ namespace {
         expect($chunk->failureMessage)->toContain(CastWriteMultiUser::class);
         expect($chunk->failureMessage)->toContain('cast_write_users');
         expect($chunk->failureMessage)->toContain('name');
-        expect($chunk->failureMessage)->not->toContain('database exception');
+        expect($chunk->failureMessage)->not->toContain('is withheld because it can contain row values');
 
         $after = DB::table('cast_write_users')->orderBy('id')->get()->all();
 

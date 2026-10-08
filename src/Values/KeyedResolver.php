@@ -22,6 +22,10 @@ use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
  *
  * The derivation is byte-exact and versioned ("pii-keyed/v1"); any change to
  * it changes every keyed output and is a semver-major change.
+ *
+ * Every parameter that carries the key bytes or a raw input value is
+ * #[\SensitiveParameter], so neither can appear in a stack trace's arguments
+ * (the key is equivalent to the PII it protects).
  */
 final class KeyedResolver
 {
@@ -35,7 +39,7 @@ final class KeyedResolver
      * @throws InvalidReplacementValueException for an unsupported input type
      * @throws UniquenessExhaustedException when no probe yields an available candidate
      */
-    public function resolve(Keyed $definition, mixed $input): ?string
+    public function resolve(Keyed $definition, #[\SensitiveParameter] mixed $input): ?string
     {
         $canonical = self::canonical($input);
 
@@ -81,7 +85,7 @@ final class KeyedResolver
      *
      * @throws InvalidReplacementValueException for a float, array or other object
      */
-    public static function canonical(mixed $value): ?string
+    public static function canonical(#[\SensitiveParameter] mixed $value): ?string
     {
         return match (true) {
             $value === null => null,
@@ -95,7 +99,7 @@ final class KeyedResolver
     }
 
     /** The 32 raw seed bytes for one (namespace, input, probe). */
-    public static function seed(string $key, string $namespace, string $canonical, int $probe): string
+    public static function seed(#[\SensitiveParameter] string $key, string $namespace, #[\SensitiveParameter] string $canonical, int $probe): string
     {
         $message = 'pii-keyed/v1'."\x1f".$namespace."\x1f".$canonical."\x1f".(string) $probe;
 
@@ -103,7 +107,7 @@ final class KeyedResolver
     }
 
     /** The shape's output for one probe, drawn from the HMAC-seeded Randomizer. */
-    public static function candidate(string $key, string $namespace, string $canonical, int $probe, RandomizedGenerator $shape, mixed $value): string
+    public static function candidate(#[\SensitiveParameter] string $key, string $namespace, #[\SensitiveParameter] string $canonical, int $probe, RandomizedGenerator $shape, #[\SensitiveParameter] mixed $value): string
     {
         $random = new Randomizer(
             new Xoshiro256StarStar(self::seed($key, $namespace, $canonical, $probe))
@@ -113,7 +117,7 @@ final class KeyedResolver
     }
 
     /** A 16-byte identity for the input, in a separate HMAC domain, so run memory holds no raw PII. */
-    private static function digest(string $key, string $namespace, string $canonical): string
+    private static function digest(#[\SensitiveParameter] string $key, string $namespace, #[\SensitiveParameter] string $canonical): string
     {
         $message = 'pii-keyed/v1/id'."\x1f".$namespace."\x1f".$canonical;
 

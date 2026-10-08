@@ -75,7 +75,7 @@ final class Keyed implements ValueGenerator
         return $this->shape::class."\x1f".$this->shape->signature();
     }
 
-    public function __invoke(mixed $value, Generator $faker, Model $row): mixed
+    public function __invoke(#[\SensitiveParameter] mixed $value, Generator $faker, Model $row): mixed
     {
         return app(KeyedResolver::class)->resolve($this, $value);
     }

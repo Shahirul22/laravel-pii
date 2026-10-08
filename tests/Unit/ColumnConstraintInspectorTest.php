@@ -3,6 +3,8 @@
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Shahirul22\LaravelPiiSanitizer\ColumnConstraintInspector;
+use Shahirul22\LaravelPiiSanitizer\ConstraintValidator;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\ConstraintViolationException;
 
 // --- Pure parsing tests: parse() against hand-written getColumns()-shaped fixtures ---
 
@@ -199,4 +201,60 @@ it('keeps each column\'s native type string as the schema reports it (BUG-34)', 
     expect($result['code']->nativeType)->toBe('character varying(100)');
     expect($result['mood']->nativeType)->toBe('"Mood"');
     expect($inspector->parse('sqlsrv', [['name' => 'x', 'type_name' => 'int', 'type' => 'int', 'nullable' => true]])['x']->nativeType)->toBe('int');
+});
+
+it('keeps the case of MySQL/MariaDB enum and set members (BUG-2)', function (string $driver) {
+    $inspector = app(ColumnConstraintInspector::class);
+
+    $result = $inspector->parse($driver, [
+        ccMysqlColumn('role', "ENUM('Admin','User')", 'enum'),
+        ccMysqlColumn('flags', "set('A','B')", 'set'),
+    ]);
+
+    expect($result['role']->family)->toBe('string');
+    expect($result['role']->allowed)->toBe(['Admin', 'User']);
+    expect($result['flags']->family)->toBe('set');
+    expect($result['flags']->allowed)->toBe(['A', 'B']);
+})->with(['mysql', 'mariadb']);
+
+it('accepts a correct-case enum or set member once parsed (BUG-2)', function () {
+    $inspector = app(ColumnConstraintInspector::class);
+    $validator = new ConstraintValidator;
+
+    $result = $inspector->parse('mysql', [
+        ccMysqlColumn('role', "enum('Admin','User')", 'enum'),
+        ccMysqlColumn('flags', "set('A','B')", 'set'),
+    ]);
+
+    $validator->assertWritable('App\\Models\\User', 'users', $result['role'], 'Admin');
+    $validator->assertWritable('App\\Models\\User', 'users', $result['flags'], 'A,B');
+
+    expect(fn () => $validator->assertWritable('App\\Models\\User', 'users', $result['role'], 'admin'))
+        ->toThrow(ConstraintViolationException::class);
+});
+
+it('accepts the full tinyint range on a MySQL tinyint(1) column, which may hold small codes as well as booleans (BUG-41)', function (string $driver) {
+    $inspector = app(ColumnConstraintInspector::class);
+    $validator = new ConstraintValidator;
+
+    $flag = $inspector->parse($driver, [ccMysqlColumn('gender', 'tinyint(1)', 'tinyint')])['gender'];
+
+    foreach ([2, -128, 127, '2', '-5', true, false, 0, 1] as $good) {
+        $validator->assertWritable('App\\Models\\User', 'users', $flag, $good);
+    }
+
+    foreach ([128, -129, '128', 'yes', 1.5] as $bad) {
+        expect(fn () => $validator->assertWritable('App\\Models\\User', 'users', $flag, $bad))
+            ->toThrow(ConstraintViolationException::class);
+    }
+})->with(['mysql', 'mariadb']);
+
+it('keeps a real boolean column to booleans and 0/1 (BUG-41)', function () {
+    $inspector = app(ColumnConstraintInspector::class);
+    $validator = new ConstraintValidator;
+
+    $flag = $inspector->parse('pgsql', [['name' => 'flag', 'type_name' => 'bool', 'type' => 'boolean', 'nullable' => true]])['flag'];
+
+    expect(fn () => $validator->assertWritable('App\\Models\\User', 'users', $flag, 2))
+        ->toThrow(ConstraintViolationException::class);
 });

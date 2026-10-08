@@ -53,6 +53,22 @@ final class ForeignKeyInspector
     private array $allEdges = [];
 
     /**
+     * Forgets every cache. Being a singleton, the inspector would otherwise
+     * carry one run's foreign keys into the next run in the same process, so
+     * a foreign key added in between would go unseen.
+     */
+    public function reset(): void
+    {
+        $this->outboundCache = [];
+        $this->outboundTargets = [];
+        $this->foreignKeysCache = [];
+        $this->inboundIndex = [];
+        $this->inboundIndexBuilt = [];
+        $this->tableListings = [];
+        $this->allEdges = [];
+    }
+
+    /**
      * @return list<string>
      */
     public function outboundForeignKeyColumns(Connection $connection, string $table): array

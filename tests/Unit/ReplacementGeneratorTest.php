@@ -550,4 +550,14 @@ namespace {
 
         expect($result)->toBe(['tenant' => $keyed, 'slug' => 'fresh']);
     });
+
+    it('retries a replacement that differs from an existing value only in case (BUG-38)', function () {
+        DB::table('rg_users')->insert(['email' => 'KAREN']);
+
+        $sanitizer = new RgPoolSanitizer(['email' => ['karen', 'fresh']]);
+
+        $result = rgGenerator()->forRow($sanitizer, new RgUser, Factory::create());
+
+        expect($result['email'])->toBe('fresh');
+    });
 }

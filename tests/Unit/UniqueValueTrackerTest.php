@@ -149,4 +149,20 @@ namespace {
 
         expect(DB::getQueryLog())->not->toBe([]);
     });
+
+    it('compares string members case-insensitively, as a case-insensitive collation does (BUG-38)', function () {
+        DB::table('uvt_rows')->insert(['email' => 'KAREN', 'a' => 'Tenant', 'b' => 'Slug']);
+
+        $tracker = new UniqueValueTracker(app('db'));
+
+        $tracker->seed('uvt_rows', ['email']);
+        $tracker->seed('uvt_rows', ['a', 'b']);
+        $tracker->claim('uvt_rows', ['email'], ['Bob']);
+
+        expect($tracker->isTaken('uvt_rows', ['email'], ['karen']))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['BOB']))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['email'], ['ÉLODIE']))->toBeFalse();
+        expect($tracker->isTaken('uvt_rows', ['a', 'b'], ['TENANT', 'slug']))->toBeTrue();
+        expect($tracker->isTaken('uvt_rows', ['a', 'b'], ['tenant', 'other']))->toBeFalse();
+    });
 }

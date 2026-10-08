@@ -415,7 +415,15 @@ namespace {
         jcConfigure($model, $sanitizer);
         app(Generator::class)->seed(1);
 
-        expect(jcRun(2)->failed())->toBeFalse();
+        // The registry is read while the run is in flight: it is cleared when the run ends.
+        $registry = app(KeyedValueRegistry::class);
+        $captured = null;
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 2, onProgress: function () use ($registry, &$captured): void {
+            $captured ??= ['bindings' => $registry->bindings('nric'), 'uniqueBound' => $registry->isUniqueBound('nric')];
+        }));
+
+        expect($report->failed())->toBeFalse();
 
         $rows = DB::table($table)->orderBy('id')->get();
         $profile = fn (int $i): array => json_decode($rows[$i]->profile, true);
@@ -433,11 +441,12 @@ namespace {
         expect($profile(0)['ids']['passport'])->toBe('A1234567');
         expect($profile(0)['theme'])->toBe('dark');
 
-        expect(app(KeyedValueRegistry::class)->bindings('nric'))->toBe([
+        expect($captured['bindings'])->toBe([
             ['connection' => null, 'table' => $table, 'column' => 'nric', 'path' => null, 'unique' => $flatUnique],
             ['connection' => null, 'table' => $table, 'column' => 'profile', 'path' => 'ids->nric', 'unique' => false],
         ]);
-        expect(app(KeyedValueRegistry::class)->isUniqueBound('nric'))->toBe($flatUnique);
+        expect($captured['uniqueBound'])->toBe($flatUnique);
+        expect($registry->bindings('nric'))->toBe([]);
 
         $first = DB::table($table)->orderBy('id')->get(['id', 'nric', 'profile'])->all();
 

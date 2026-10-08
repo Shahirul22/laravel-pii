@@ -403,4 +403,13 @@ namespace {
             ->expectsOutputToContain('table:cmd_role_user')
             ->run();
     });
+
+    it('prints the invalid-model error for a mistyped --model class instead of a container exception (BUG-43)', function () {
+        $typo = 'App\\Models\\CmdTypo';
+
+        $this->artisan('pii:sanitize', ['--model' => [$typo]])
+            ->expectsOutputToContain('"'.$typo.'" in pii.models (or --model) is not a valid Eloquent model class.')
+            ->assertExitCode(1)
+            ->run();
+    });
 }

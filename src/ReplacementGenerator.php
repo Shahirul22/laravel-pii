@@ -8,6 +8,7 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsupportedCastException;
 use Shahirul22\LaravelPiiSanitizer\Values\Json\JsonPaths;
 use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
@@ -38,15 +39,17 @@ class ReplacementGenerator
      * change it. Keyed members of a violated constraint are excluded from the
      * regenerate set, and a violated constraint left with no non-keyed
      * declared member fails fast with keyedConflict(). A constraint tuple
-     * holding a NULL keyed member is exempt from the uniqueness bookkeeping,
-     * because a tuple containing NULL never violates a unique index. Non-keyed
-     * columns keep v1's random retry unchanged.
+     * holding a NULL in any member (declared or not, whatever its definition
+     * type) is exempt from the uniqueness bookkeeping, because MySQL,
+     * PostgreSQL and SQLite never treat NULLs as equal in a unique index.
+     * Non-keyed columns keep v1's random retry unchanged.
      *
      * @return array<string, mixed>
      *
      * @throws UniquenessExhaustedException
      * @throws InvalidCategoricalColumnException
      * @throws InvalidReplacementValueException
+     * @throws UnsupportedCastException
      */
     public function forRow(Sanitizer $sanitizer, Model $row, Generator $faker): array
     {
@@ -82,11 +85,11 @@ class ReplacementGenerator
             $violated = [];
 
             foreach ($constraints as $constraint) {
-                if ($this->hasNullKeyedMember($constraint, $values, $keyed)) {
+                $tuple = $this->tupleFor($constraint, $values, $declared, $row);
+
+                if (in_array(null, $tuple, true)) {
                     continue;
                 }
-
-                $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
                 if ($this->tracker->isTaken($table, $constraint, $tuple, $connection)) {
                     $violated[] = $constraint;
@@ -95,11 +98,11 @@ class ReplacementGenerator
 
             if ($violated === []) {
                 foreach ($constraints as $constraint) {
-                    if ($this->hasNullKeyedMember($constraint, $values, $keyed)) {
+                    $tuple = $this->tupleFor($constraint, $values, $declared, $row);
+
+                    if (in_array(null, $tuple, true)) {
                         continue;
                     }
-
-                    $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
                     $this->tracker->claim($table, $constraint, $tuple, $connection);
                 }
@@ -149,6 +152,7 @@ class ReplacementGenerator
      * @param  list<string>  $categorical
      *
      * @throws InvalidCategoricalColumnException
+     * @throws UnsupportedCastException
      */
     private function generateValue(string $column, array $fields, Model $row, Generator $faker, array $categorical, string $table, string $modelClass, ?string $connection = null): mixed
     {
@@ -160,10 +164,23 @@ class ReplacementGenerator
             }
         }
 
-        $current = $row->getAttribute($column);
+        $current = $this->resolver->usesCurrentValue($fields[$column])
+            ? $this->currentValue($row, $column)
+            : null;
 
         if ($current === null && $fields[$column] instanceof JsonPaths && $this->holdsUndecodableJson($row, $column)) {
             throw InvalidReplacementValueException::inColumn($column, InvalidReplacementValueException::invalidJsonDocument());
+        }
+
+        // On a cast column Eloquent has already decoded the stored document.
+        // A bare scalar root (5, true, 1.5, "hello") cannot be descended into,
+        // so every declared path is skipped (the absent/null rule) and the
+        // value is returned unchanged. A decoded string is the document's own
+        // value, not JSON text, so it must not reach JsonPaths, which would
+        // decode it a second time. A column with no cast is a string carrier
+        // and keeps JsonPaths' own handling.
+        if ($fields[$column] instanceof JsonPaths && $current !== null && ! is_array($current) && $row->hasCast($column)) {
+            return $current;
         }
 
         try {
@@ -182,6 +199,27 @@ class ReplacementGenerator
         }
 
         return $value;
+    }
+
+    /**
+     * The row's current, cast-decoded value of $column. A value its cast or
+     * accessor cannot decode (an encrypted cast holding ciphertext made with
+     * another APP_KEY, the normal state after importing a production dump)
+     * raises a named error that names the model, the column and the cast,
+     * never the stored value. Only called for a definition that reads the
+     * current value; a static value or a Faker formatter name skips the read.
+     *
+     * @throws UnsupportedCastException
+     */
+    private function currentValue(Model $row, string $column): mixed
+    {
+        try {
+            return $row->getAttribute($column);
+        } catch (\Throwable $e) {
+            $cast = $row->getCasts()[$column] ?? 'get accessor';
+
+            throw UnsupportedCastException::undecodableValue($row::class, $column, $row->getTable(), is_string($cast) ? $cast : get_debug_type($cast), $e::class);
+        }
     }
 
     /**
@@ -230,25 +268,6 @@ class ReplacementGenerator
             || is_scalar($value)
             || is_array($value)
             || $value instanceof \UnitEnum;
-    }
-
-    /**
-     * Whether the constraint holds a Keyed member whose generated value is
-     * NULL: such a tuple never violates a unique index, so it is skipped.
-     *
-     * @param  list<string>  $constraint
-     * @param  array<string, mixed>  $values
-     * @param  list<string>  $keyed
-     */
-    private function hasNullKeyedMember(array $constraint, array $values, array $keyed): bool
-    {
-        foreach ($constraint as $member) {
-            if (in_array($member, $keyed, true) && ($values[$member] ?? null) === null) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

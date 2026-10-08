@@ -26,6 +26,15 @@ class ColumnConstraintInspector
     ) {}
 
     /**
+     * Forgets every memoized table. Being a singleton, the inspector would
+     * otherwise carry one run's schema into the next run in the same process.
+     */
+    public function reset(): void
+    {
+        $this->cache = [];
+    }
+
+    /**
      * @return array<string, ColumnConstraints>
      */
     public function constraintsFor(string $table, ?string $connection = null): array
@@ -70,6 +79,9 @@ class ColumnConstraintInspector
 
         foreach ($columns as $row) {
             $name = $row['name'];
+            // Lowercased for family and length detection only: enum and set
+            // members are read from the original string, because a member's
+            // case is part of its value ('Admin' is not 'admin').
             $type = strtolower($row['type']);
             $typeName = strtolower($row['type_name']);
             $nullable = (bool) $row['nullable'];
@@ -82,7 +94,7 @@ class ColumnConstraintInspector
 
             $family = $this->familyFor($type, $typeName);
             $maxLength = $this->maxLengthFor($driver, $type);
-            $allowed = $this->allowedFor($driver, $type, $name, $ddl);
+            $allowed = $this->allowedFor($driver, $row['type'], $name, $ddl);
 
             $result[$name] = new ColumnConstraints($name, $family, $maxLength, $allowed, $nullable, $row['type']);
         }
@@ -92,6 +104,9 @@ class ColumnConstraintInspector
 
     private function familyFor(string $type, string $typeName): string
     {
+        // MySQL and MariaDB report BOOLEAN as tinyint(1), so a tinyint(1) is
+        // classed boolean; ConstraintValidator also accepts the full signed
+        // tinyint range for it, because the column may hold small codes.
         if ($type === 'tinyint(1)' || in_array($typeName, ['bool', 'boolean'], true)) {
             return 'boolean';
         }
@@ -152,12 +167,15 @@ class ColumnConstraintInspector
     }
 
     /**
+     * $type is the column type exactly as the schema reports it, not
+     * lowercased, so enum and set members keep their case.
+     *
      * @return list<string>|null
      */
     private function allowedFor(string $driver, string $type, string $column, ?string $ddl): ?array
     {
         if (in_array($driver, ['mysql', 'mariadb'], true)) {
-            if (preg_match('/^(?:enum|set)\((.*)\)$/s', $type, $m) === 1) {
+            if (preg_match('/^(?:enum|set)\((.*)\)$/is', $type, $m) === 1) {
                 return $this->parseQuotedList($m[1]);
             }
 

@@ -198,7 +198,7 @@ namespace {
         expect($chunk->failureMessage)->toContain('ccv_users');
         expect($chunk->failureMessage)->toContain('allowed');
         expect($chunk->failureMessage)->not->toContain('bogus');
-        expect($chunk->failureMessage)->not->toContain('database exception');
+        expect($chunk->failureMessage)->not->toContain('is withheld because it can contain row values');
 
         $after = DB::table('ccv_users')->orderBy('id')->get()->all();
         expect($after)->toEqual($before);

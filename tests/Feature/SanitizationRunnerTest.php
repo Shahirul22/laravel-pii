@@ -116,6 +116,11 @@ namespace {
 
             return $this->real->resolve($model);
         }
+
+        public function resolveTable(string $table): ?Sanitizer
+        {
+            return $this->real->resolveTable($table);
+        }
     }
 }
 

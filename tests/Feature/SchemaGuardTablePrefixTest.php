@@ -87,7 +87,7 @@ namespace {
         // prefix applied to their physical names.
         expect(Schema::hasTable('prefixed_users'))->toBeTrue();
 
-        $guard = new SchemaGuard(app('db'));
+        $guard = app(SchemaGuard::class);
 
         try {
             $guard->assertSafe(new PrefixedInboundRefSanitizer, PrefixedUser::class);

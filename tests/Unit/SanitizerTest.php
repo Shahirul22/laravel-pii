@@ -32,6 +32,11 @@ class FakeSanitizerResolver implements SanitizerResolverContract
 
         return $this->return;
     }
+
+    public function resolveTable(string $table): ?Sanitizer
+    {
+        return $this->return;
+    }
 }
 
 it('is abstract and cannot be instantiated directly', function () {

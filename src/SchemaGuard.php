@@ -2,10 +2,12 @@
 
 namespace Shahirul22\LaravelPiiSanitizer;
 
+use Faker\Generator;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\ConstraintViolationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
 
@@ -46,8 +48,19 @@ class SchemaGuard implements SchemaGuardContract
 
     public function __construct(
         private readonly DatabaseManager $db,
+        private readonly ColumnConstraintInspector $constraints,
+        private readonly ConstraintValidator $validator,
+        private readonly ValueDefinitionResolver $definitions,
+        private readonly CastAwareEncoder $encoder,
+        private readonly Generator $faker,
+        private readonly UniqueColumnInspector $uniqueInspector,
     ) {}
 
+    /**
+     * @throws UnsafeColumnException
+     * @throws InvalidConfigurationException
+     * @throws ConstraintViolationException
+     */
     public function assertSafe(Sanitizer $sanitizer, Model|string $model): void
     {
         $modelClass = is_object($model) ? $model::class : $model;
@@ -103,14 +116,76 @@ class SchemaGuard implements SchemaGuardContract
             }
         }
 
-        // The primary key drives chunkById()'s paging/ordering (R5.2); rewriting
-        // it mid-run would corrupt the chunk cursor for that same read. Checked
-        // last so a primary key that is also an inbound-referenced column (the
-        // common case) still surfaces the more specific FK message above.
-        $primaryKey = $instance->getKeyName();
+        // The primary key drives the read/paging path (chunkById() for a
+        // single column, chunkByKeyset() for a composite one); rewriting any
+        // of its columns mid-run would corrupt the chunk cursor for that
+        // same read. Checked last so a primary key that is also an
+        // inbound-referenced column (the common case) still surfaces the
+        // more specific FK message above. Composite-aware (R7.1): every
+        // column of a multi-column primary key is protected, not only the
+        // first, and a model-declared key name not present in the schema PK
+        // (e.g. a TableRow's null key name) is included too when non-empty.
+        $protected = $this->uniqueInspector->primaryKey($table, $instance->getConnectionName()) ?? [];
 
-        if (in_array($primaryKey, $columns, true)) {
-            throw UnsafeColumnException::primaryKey($modelClass, $primaryKey, $sanitizer::class, $table);
+        $modelKeyName = $instance->getKeyName();
+
+        // Model::getKeyName()'s @return string PHPDoc does not reflect
+        // reality for a TableRow target (its $primaryKey is intentionally
+        // null — design §R7 Model-less table target), so it can genuinely
+        // be null at runtime despite the declared type.
+        // @phpstan-ignore function.alreadyNarrowedType (getKeyName() can be null for a TableRow with $primaryKey = null, despite its string PHPDoc)
+        if (is_string($modelKeyName) && $modelKeyName !== '' && ! in_array($modelKeyName, $protected, true)) {
+            $protected[] = $modelKeyName;
+        }
+
+        foreach ($columns as $column) {
+            if (in_array($column, $protected, true)) {
+                throw UnsafeColumnException::primaryKey($modelClass, $column, $sanitizer::class, $table);
+            }
+        }
+
+        $this->assertStaticValuesWritable($sanitizer, $instance, $modelClass, $table, $columns);
+    }
+
+    /**
+     * R6.3 boot validation: a definition determinable in full from the
+     * declaration alone (static per ValueDefinitionResolver::isStatic()),
+     * on a column that is neither cast-bearing (§R5 — its stored value is
+     * only known after the per-row encode step) nor categorical (its
+     * sampled value comes from DistributionSampler, not the static
+     * definition), is validated once here rather than waiting for a row to
+     * be read. Every other case is validated per-row inside
+     * SanitizationRunner::processChunk().
+     *
+     * @param  list<string>  $columns
+     *
+     * @throws ConstraintViolationException
+     */
+    private function assertStaticValuesWritable(Sanitizer $sanitizer, Model $instance, string $modelClass, string $table, array $columns): void
+    {
+        $fields = $sanitizer->fields();
+        $categorical = $sanitizer->categorical();
+        $cast = $this->encoder->classify($instance, $columns);
+
+        $candidates = array_values(array_filter(
+            $columns,
+            fn (string $column): bool => $this->definitions->isStatic($fields[$column], $this->faker)
+                && ! in_array($column, $cast, true)
+                && ! in_array($column, $categorical, true)
+        ));
+
+        if ($candidates === []) {
+            return;
+        }
+
+        $map = $this->constraints->constraintsFor($table, $instance->getConnectionName());
+
+        foreach ($candidates as $column) {
+            if (! isset($map[$column])) {
+                continue;
+            }
+
+            $this->validator->assertWritable($modelClass, $table, $map[$column], SanitizationRunner::bindableValue($fields[$column]));
         }
     }
 

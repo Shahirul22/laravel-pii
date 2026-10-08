@@ -111,6 +111,44 @@ namespace {
         expect($inspector->uniqueConstraints('uci_divergent', 'uci_secondary'))->toContain(['code']);
     });
 
+    it('reports a single-column primary key via primaryKey()', function () {
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        expect($inspector->primaryKey('uci_users'))->toBe(['id']);
+    });
+
+    it('reports a composite primary key in declared order via primaryKey()', function () {
+        Schema::create('uci_composite', function ($table) {
+            $table->unsignedBigInteger('org_id');
+            $table->unsignedBigInteger('member_id');
+            $table->primary(['org_id', 'member_id']);
+        });
+
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        expect($inspector->primaryKey('uci_composite'))->toBe(['org_id', 'member_id']);
+    });
+
+    it('returns null from primaryKey() for a table with only a unique index', function () {
+        Schema::create('uci_unique_only', function ($table) {
+            $table->string('code')->unique();
+        });
+
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        expect($inspector->primaryKey('uci_unique_only'))->toBeNull();
+    });
+
+    it('returns null from primaryKey() for a table with no index at all', function () {
+        Schema::create('uci_no_index', function ($table) {
+            $table->string('name');
+        });
+
+        $inspector = new UniqueColumnInspector(app('db'));
+
+        expect($inspector->primaryKey('uci_no_index'))->toBeNull();
+    });
+
     it('memoizes per (connection, table), not per table alone', function () {
         config()->set('database.connections.uci_secondary', [
             'driver' => 'sqlite',

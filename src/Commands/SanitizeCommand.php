@@ -3,7 +3,6 @@
 namespace Shahirul22\LaravelPiiSanitizer\Commands;
 
 use Illuminate\Console\Command;
-use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\ChunkReport;
 use Shahirul22\LaravelPiiSanitizer\ChunkStatus;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
@@ -62,11 +61,26 @@ class SanitizeCommand extends Command
             return self::FAILURE;
         }
 
+        /** @var list<string> $resolvedTargets */
+        $resolvedTargets = $resolvedModels;
+
+        if ($options->models === null) {
+            $rawTables = config('pii.tables', []);
+
+            if (is_array($rawTables)) {
+                foreach (array_keys($rawTables) as $tableName) {
+                    if (is_string($tableName)) {
+                        $resolvedTargets[] = 'table:'.$tableName;
+                    }
+                }
+            }
+        }
+
         if ($options->dryRun) {
             $this->components->info('Dry run — no data will be written.');
         }
 
-        $this->components->info(sprintf('Sanitizing %d model(s).', count($resolvedModels)));
+        $this->components->info(sprintf('Sanitizing %d model(s).', count($resolvedTargets)));
 
         try {
             $report = $runner->run($options);
@@ -81,7 +95,7 @@ class SanitizeCommand extends Command
         $this->newLine(2);
 
         if ($report->failed()) {
-            $this->renderFailureSummary($report, $resolvedModels);
+            $this->renderFailureSummary($report, $resolvedTargets);
 
             return self::FAILURE;
         }
@@ -100,6 +114,28 @@ class SanitizeCommand extends Command
     private function isPositiveIntegerString(string $value): bool
     {
         return ctype_digit($value) && (int) $value >= 1;
+    }
+
+    /**
+     * Renders a ChunkReport::$firstKey/$lastKey for display: an array
+     * (a multi-column paging identity) becomes "col=val, col2=val2" instead
+     * of PHP's "Array to string conversion" notice and the literal text
+     * "Array" that a bare (string) cast on an array would otherwise emit —
+     * see docs/design/engine-hardening/spec §R7 Reporting.
+     */
+    private function formatKey(mixed $key): string
+    {
+        if (is_array($key)) {
+            $parts = [];
+
+            foreach ($key as $column => $value) {
+                $parts[] = $column.'='.(is_scalar($value) || $value === null ? (string) $value : get_debug_type($value));
+            }
+
+            return implode(', ', $parts);
+        }
+
+        return $key === null ? '' : (string) $key;
     }
 
     /**
@@ -205,9 +241,9 @@ class SanitizeCommand extends Command
     }
 
     /**
-     * @param  list<class-string<Model>>  $resolvedModels
+     * @param  list<string>  $resolvedTargets
      */
-    private function renderFailureSummary(RunReport $report, array $resolvedModels): void
+    private function renderFailureSummary(RunReport $report, array $resolvedTargets): void
     {
         $failing = null;
 
@@ -237,8 +273,8 @@ class SanitizeCommand extends Command
             $this->line(sprintf(
                 '  Chunk #%d failed (keys %s–%s):',
                 $failingChunk->index,
-                (string) $failingChunk->firstKey,
-                (string) $failingChunk->lastKey
+                $this->formatKey($failingChunk->firstKey),
+                $this->formatKey($failingChunk->lastKey)
             ));
             $this->line(sprintf('    %s: %s', $failingChunk->failureClass, $failingChunk->failureMessage));
         }
@@ -248,7 +284,7 @@ class SanitizeCommand extends Command
         $this->components->twoColumnDetail('Chunks not attempted:', (string) $failing->chunksNotAttempted());
 
         $attemptedClasses = array_map(fn (ModelReport $model): string => $model->modelClass, $report->models);
-        $notAttempted = array_values(array_diff($resolvedModels, $attemptedClasses));
+        $notAttempted = array_values(array_diff($resolvedTargets, $attemptedClasses));
 
         foreach ($notAttempted as $class) {
             $this->components->twoColumnDetail($class, 'not attempted — a prior model failed');

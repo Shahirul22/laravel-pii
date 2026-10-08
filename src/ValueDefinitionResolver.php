@@ -44,6 +44,32 @@ class ValueDefinitionResolver
     }
 
     /**
+     * Whether $definition is static: determinable in full from the
+     * Sanitizer declaration alone, independent of row data. Mirrors
+     * resolve()'s own dispatch order exactly — a Closure, a ValueGenerator
+     * class-string, or a resolvable Faker-formatter string are all
+     * per-row (false); anything else falls through to resolve()'s
+     * unchanged-fallback branch and is static (true). See
+     * docs/design/engine-hardening/spec §R6 Boot vs per-row split (R6.3).
+     */
+    public function isStatic(mixed $definition, Generator $faker): bool
+    {
+        if ($definition instanceof \Closure) {
+            return false;
+        }
+
+        if (is_string($definition) && class_exists($definition) && is_subclass_of($definition, ValueGenerator::class)) {
+            return false;
+        }
+
+        if (is_string($definition) && $this->isFakerFormatter($definition, $faker)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Determine whether $name is a resolvable Faker formatter/method name.
      *
      * Faker\Generator dispatches shorthand names (e.g. 'email', 'safeEmail')

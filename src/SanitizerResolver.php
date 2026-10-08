@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
+use Shahirul22\LaravelPiiSanitizer\Exceptions\ConstraintViolationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsafeColumnException;
@@ -27,9 +28,11 @@ class SanitizerResolver implements SanitizerResolverContract
      *
      * @throws UnsafeColumnException
      * @throws InvalidCategoricalColumnException
+     * @throws ConstraintViolationException
      *
      * Rejection (an unsafe FK/FK-referenced column declared in the resolved
-     * sanitizer's fields(), or an invalid categorical() declaration)
+     * sanitizer's fields(), an invalid categorical() declaration, or a
+     * declaration-determinable column-constraint violation per §R6.3)
      * happens here, at resolution time — before any row is read or
      * written.
      */
@@ -51,6 +54,25 @@ class SanitizerResolver implements SanitizerResolverContract
 
         if (class_exists($conventional)) {
             return $this->make($conventional, $model);
+        }
+
+        return null;
+    }
+
+    /**
+     * Config-only lookup against `pii.tables` -- there is no convention
+     * lookup for a bare table name (a table has no class name to
+     * convention-match against). See
+     * docs/design/engine-hardening/spec §R7 Model-less table target.
+     *
+     * @throws UnsafeColumnException
+     */
+    public function resolveTable(string $table): ?Sanitizer
+    {
+        $map = config('pii.tables', []);
+
+        if (is_array($map) && array_key_exists($table, $map) && is_string($map[$table]) && $map[$table] !== '') {
+            return $this->make($map[$table], TableRow::forTable($table));
         }
 
         return null;

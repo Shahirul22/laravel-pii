@@ -10,8 +10,9 @@ use Shahirul22\LaravelPiiSanitizer\SanitizerResolver;
 it('exposes exactly the design-fixed top-level config keys', function () {
     $config = require __DIR__.'/../../config/pii.php';
 
-    expect(array_keys($config))->toBe(['sanitizers', 'models', 'environments', 'chunk']);
+    expect(array_keys($config))->toBe(['sanitizers', 'models', 'tables', 'environments', 'chunk']);
     expect($config)->not->toHaveKey('connection');
+    expect($config['tables'])->toBe([]);
 });
 
 it('leaves the existing key unchanged', function () {

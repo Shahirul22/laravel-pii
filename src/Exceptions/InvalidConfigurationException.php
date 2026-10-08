@@ -24,4 +24,11 @@ final class InvalidConfigurationException extends \RuntimeException
             "[laravel-pii-sanitizer] \"{$value}\" in pii.sanitizers is not a valid Sanitizer class. Check the class exists and extends Shahirul22\\LaravelPiiSanitizer\\Sanitizer."
         );
     }
+
+    public static function tablesNotAMap(): self
+    {
+        return new self(
+            '[laravel-pii-sanitizer] pii.tables must be a map of table-name => Sanitizer class-name strings.'
+        );
+    }
 }

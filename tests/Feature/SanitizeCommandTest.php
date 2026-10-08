@@ -42,6 +42,31 @@ namespace {
             ];
         }
     }
+
+    class CmdMembership extends Model
+    {
+        protected $table = 'cmd_memberships';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class CmdMembershipFailingSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['payload' => fn () => new stdClass];
+        }
+    }
+
+    class CmdRoleUserSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['note' => fn () => 'redacted'];
+        }
+    }
 }
 
 namespace {
@@ -299,5 +324,83 @@ namespace {
         $after = cmdUsersSnapshot();
 
         expect($after)->toEqual($before);
+    });
+
+    it('formats a composite-key failure summary safely, without an "Array" rendering', function () {
+        Schema::create('cmd_memberships', function ($table) {
+            $table->unsignedBigInteger('org_id');
+            $table->unsignedBigInteger('member_id');
+            $table->string('payload');
+            $table->primary(['org_id', 'member_id']);
+        });
+
+        DB::table('cmd_memberships')->insert(['org_id' => 1, 'member_id' => 1, 'payload' => 'x']);
+
+        config()->set('pii.sanitizers', [
+            CmdUser::class => CmdUserSanitizer::class,
+            CmdMembership::class => CmdMembershipFailingSanitizer::class,
+        ]);
+        config()->set('pii.models', [CmdMembership::class]);
+
+        $this->artisan('pii:sanitize', ['--chunk' => 10])
+            ->assertExitCode(1)
+            ->expectsOutputToContain('keys org_id=1, member_id=1')
+            ->run();
+    });
+
+    it('lists a not-attempted table target the same way as a not-attempted model', function () {
+        Schema::create('cmd_memberships', function ($table) {
+            $table->unsignedBigInteger('org_id');
+            $table->unsignedBigInteger('member_id');
+            $table->string('payload');
+            $table->primary(['org_id', 'member_id']);
+        });
+
+        DB::table('cmd_memberships')->insert(['org_id' => 1, 'member_id' => 1, 'payload' => 'x']);
+
+        Schema::create('cmd_role_user', function ($table) {
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('role_id');
+            $table->string('note');
+        });
+
+        DB::table('cmd_role_user')->insert(['user_id' => 1, 'role_id' => 1, 'note' => 'x']);
+
+        config()->set('pii.sanitizers', [
+            CmdUser::class => CmdUserSanitizer::class,
+            CmdMembership::class => CmdMembershipFailingSanitizer::class,
+        ]);
+        config()->set('pii.models', [CmdMembership::class]);
+        config()->set('pii.tables', ['cmd_role_user' => CmdRoleUserSanitizer::class]);
+
+        $kernel = app(Kernel::class);
+        $input = new ArrayInput(['command' => 'pii:sanitize', '--chunk' => '10']);
+        $output = new BufferedOutput;
+        $exitCode = $kernel->handle($input, $output);
+        $text = $output->fetch();
+
+        expect($exitCode)->toBe(1);
+        expect($text)->toContain('table:cmd_role_user');
+        expect($text)->toContain('not attempted');
+
+        $row = DB::table('cmd_role_user')->first();
+        expect($row->note)->toBe('x');
+    });
+
+    it('includes a table-target detail line in the success output', function () {
+        Schema::create('cmd_role_user', function ($table) {
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('role_id');
+            $table->string('note');
+        });
+
+        DB::table('cmd_role_user')->insert(['user_id' => 1, 'role_id' => 1, 'note' => 'secret']);
+
+        config()->set('pii.tables', ['cmd_role_user' => CmdRoleUserSanitizer::class]);
+
+        $this->artisan('pii:sanitize', ['--chunk' => 10])
+            ->assertExitCode(0)
+            ->expectsOutputToContain('table:cmd_role_user')
+            ->run();
     });
 }

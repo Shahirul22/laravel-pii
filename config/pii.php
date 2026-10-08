@@ -33,6 +33,25 @@ return [
 
     /*
     |--------------------------------------------------------------------
+    | Tables
+    |--------------------------------------------------------------------
+    |
+    | An explicit table-name => Sanitizer class-name map for model-less
+    | targets (e.g. a many-to-many pivot table) that have no dedicated
+    | Eloquent model. Unlike "models" above, there is no convention-based
+    | lookup for a bare table name -- a table has no class name to
+    | convention-match against. Configured tables run after "models", in
+    | this map's declared order. The --model CLI filter excludes table
+    | targets entirely.
+    |
+    | Example:
+    |   'role_user' => \App\Sanitizers\RoleUserSanitizer::class,
+    |
+    */
+    'tables' => [],
+
+    /*
+    |--------------------------------------------------------------------
     | Allowed environments
     |--------------------------------------------------------------------
     |

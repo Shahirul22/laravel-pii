@@ -32,6 +32,21 @@ abstract class Sanitizer
     }
 
     /**
+     * An explicit developer-declared paging identity, used only when no
+     * schema-derived source (primary key, NOT NULL unique index) resolves
+     * one — see docs/design/engine-hardening/spec §R7 Paging identity,
+     * source 3. An empty list (the default) means "no override": resolution
+     * falls through to the fallback source. Declared columns must be NOT
+     * NULL, unique per row, and disjoint from fields() — verified at boot.
+     *
+     * @return list<string>
+     */
+    public function pagingKey(): array
+    {
+        return [];
+    }
+
+    /**
      * Resolve the sanitizer for a given model (instance or class-string),
      * or null when the model has no sanitizer.
      */

@@ -27,6 +27,11 @@ namespace {
             return 'should-never-be-called';
         }
     }
+
+    enum VdrStaticEnum: string
+    {
+        case Active = 'active';
+    }
 }
 
 namespace {
@@ -145,5 +150,41 @@ namespace {
         // behavior is consistent across formatters, not a one-off.
         expect($resolver->resolve('city', 'old', $faker, $row))->not->toBe('city');
         expect($resolver->resolve('company', 'old', $faker, $row))->not->toBe('company');
+    });
+
+    it('isStatic() returns false for a closure', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = app(Generator::class);
+
+        expect($resolver->isStatic(fn ($value, $faker, $row) => $value, $faker))->toBeFalse();
+    });
+
+    it('isStatic() returns false for a ValueGenerator class-string', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = app(Generator::class);
+
+        expect($resolver->isStatic(VdrUppercaseGenerator::class, $faker))->toBeFalse();
+    });
+
+    it('isStatic() returns false for a Faker method-name shorthand string', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = app(Generator::class);
+
+        expect($resolver->isStatic('safeEmail', $faker))->toBeFalse();
+        expect($resolver->isStatic('name', $faker))->toBeFalse();
+    });
+
+    it('isStatic() returns true for a non-generator, non-faker-formatter string, and every other static shape', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = app(Generator::class);
+
+        expect($resolver->isStatic('N/A', $faker))->toBeTrue();
+        expect($resolver->isStatic('not-a-faker-method-xyz', $faker))->toBeTrue();
+        expect($resolver->isStatic(null, $faker))->toBeTrue();
+        expect($resolver->isStatic(0, $faker))->toBeTrue();
+        expect($resolver->isStatic(123, $faker))->toBeTrue();
+        expect($resolver->isStatic(true, $faker))->toBeTrue();
+        expect($resolver->isStatic(['a' => 1], $faker))->toBeTrue();
+        expect($resolver->isStatic(VdrStaticEnum::Active, $faker))->toBeTrue();
     });
 }

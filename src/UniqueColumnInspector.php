@@ -14,6 +14,9 @@ class UniqueColumnInspector
     /** @var array<string, list<list<string>>> */
     private array $constraintCache = [];
 
+    /** @var array<string, list<array{name: string|null, columns: list<string>, type: string|null, unique: bool, primary: bool}>> */
+    private array $indexCache = [];
+
     public function __construct(
         private readonly DatabaseManager $db,
     ) {}
@@ -33,8 +36,7 @@ class UniqueColumnInspector
             return $this->constraintCache[$cacheKey];
         }
 
-        /** @var list<array{name: string|null, columns: list<string>, type: string|null, unique: bool, primary: bool}> $indexes */
-        $indexes = $this->db->connection($connection)->getSchemaBuilder()->getIndexes($table);
+        $indexes = $this->indexes($table, $connection);
 
         $tuples = [];
 
@@ -51,6 +53,45 @@ class UniqueColumnInspector
         }
 
         return $this->constraintCache[$cacheKey] = array_values($tuples);
+    }
+
+    /**
+     * The table's primary key as its ordered column tuple (composite-aware),
+     * or null when the table declares no primary key — see
+     * docs/design/engine-hardening/spec §R7 Paging identity, source 1.
+     *
+     * @return list<string>|null
+     */
+    public function primaryKey(string $table, ?string $connection = null): ?array
+    {
+        foreach ($this->indexes($table, $connection) as $index) {
+            if ($index['primary'] === true) {
+                return $index['columns'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Raw getIndexes() result, memoized per (connection, table) so
+     * uniqueConstraints() and primaryKey() together never issue more than
+     * one schema query per table.
+     *
+     * @return list<array{name: string|null, columns: list<string>, type: string|null, unique: bool, primary: bool}>
+     */
+    private function indexes(string $table, ?string $connection = null): array
+    {
+        $cacheKey = ($connection ?? '').'.'.$table;
+
+        if (isset($this->indexCache[$cacheKey])) {
+            return $this->indexCache[$cacheKey];
+        }
+
+        /** @var list<array{name: string|null, columns: list<string>, type: string|null, unique: bool, primary: bool}> $indexes */
+        $indexes = $this->db->connection($connection)->getSchemaBuilder()->getIndexes($table);
+
+        return $this->indexCache[$cacheKey] = $indexes;
     }
 
     /**

@@ -12,4 +12,13 @@ interface SanitizerResolverContract
      * @throws UnsafeColumnException
      */
     public function resolve(Model|string $model): ?Sanitizer;
+
+    /**
+     * Resolve the sanitizer for a model-less table target (config
+     * `pii.tables` only — no convention lookup), or null when the table has
+     * no configured sanitizer.
+     *
+     * @throws UnsafeColumnException
+     */
+    public function resolveTable(string $table): ?Sanitizer;
 }

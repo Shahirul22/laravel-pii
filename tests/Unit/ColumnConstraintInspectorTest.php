@@ -187,3 +187,16 @@ it('finds the allowed set of an enum column under a configured table prefix', fu
 
     expect($map['status']->allowed)->toBe(['active', 'inactive']);
 });
+
+it('keeps each column\'s native type string as the schema reports it (BUG-34)', function () {
+    $inspector = app(ColumnConstraintInspector::class);
+
+    $result = $inspector->parse('pgsql', [
+        ['name' => 'code', 'type_name' => 'varchar', 'type' => 'character varying(100)', 'nullable' => true],
+        ['name' => 'mood', 'type_name' => 'Mood', 'type' => '"Mood"', 'nullable' => true],
+    ]);
+
+    expect($result['code']->nativeType)->toBe('character varying(100)');
+    expect($result['mood']->nativeType)->toBe('"Mood"');
+    expect($inspector->parse('sqlsrv', [['name' => 'x', 'type_name' => 'int', 'type' => 'int', 'nullable' => true]])['x']->nativeType)->toBe('int');
+});

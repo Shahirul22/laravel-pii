@@ -8,10 +8,11 @@ namespace Shahirul22\LaravelPiiSanitizer;
  * sanitizer's declared fields() — see docs/design/engine-hardening/spec §R7
  * Paging identity. $source records which precedence tier produced it:
  * 'primary' (schema primary key), 'model-key' (the model's own declared key
- * name, when present in the table's columns), 'unique' (a NOT NULL unique
- * index disjoint from fields()), 'declared' (Sanitizer::pagingKey()), or
- * 'fallback' (every NOT NULL, non-json/binary/decimal column not in
- * fields(), proven unique at boot).
+ * name, when present in the table's columns, NOT NULL and proven unique at
+ * boot), 'unique' (a NOT NULL unique index disjoint from fields(), proven
+ * unique at boot), 'declared' (Sanitizer::pagingKey()), or 'fallback' (every
+ * NOT NULL string, integer, boolean or datetime column not in fields(),
+ * proven unique at boot).
  */
 final readonly class PagingKey
 {

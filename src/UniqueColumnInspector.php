@@ -47,6 +47,13 @@ class UniqueColumnInspector
 
             $tuple = $index['columns'];
 
+            // An index made only of expressions (unique on lower(email),
+            // say) lists no columns. An empty tuple constrains no column,
+            // so it is left out rather than offered as a paging identity.
+            if ($tuple === []) {
+                continue;
+            }
+
             $key = implode("\x1f", $tuple);
 
             $tuples[$key] = $tuple;

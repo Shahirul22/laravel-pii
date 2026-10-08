@@ -75,7 +75,7 @@ class ColumnConstraintInspector
             $nullable = (bool) $row['nullable'];
 
             if (! in_array($driver, ['mysql', 'mariadb', 'pgsql', 'sqlite'], true)) {
-                $result[$name] = new ColumnConstraints($name, 'other', null, null, $nullable);
+                $result[$name] = new ColumnConstraints($name, 'other', null, null, $nullable, $row['type']);
 
                 continue;
             }
@@ -84,7 +84,7 @@ class ColumnConstraintInspector
             $maxLength = $this->maxLengthFor($driver, $type);
             $allowed = $this->allowedFor($driver, $type, $name, $ddl);
 
-            $result[$name] = new ColumnConstraints($name, $family, $maxLength, $allowed, $nullable);
+            $result[$name] = new ColumnConstraints($name, $family, $maxLength, $allowed, $nullable, $row['type']);
         }
 
         return $result;

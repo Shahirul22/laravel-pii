@@ -76,7 +76,9 @@ class ChunkSizer
      * Memoized COUNT(*) per (connection, table), so at most one is issued
      * per table per run — keyed by connection too, since two models on
      * different connections can share a table name and would otherwise
-     * silently inherit each other's row count.
+     * silently inherit each other's row count. Counted without the model's
+     * global scopes (SoftDeletes included), the same way the runner reads
+     * the rows: a scope-hidden row is still a row to sanitize.
      */
     public function countFor(Model $model): int
     {
@@ -84,7 +86,7 @@ class ChunkSizer
         $key = ($model->getConnectionName() ?? '').'.'.$table;
 
         if (! array_key_exists($key, $this->counts)) {
-            $this->counts[$key] = (int) $model->newQuery()->toBase()->count();
+            $this->counts[$key] = (int) $model->newQueryWithoutScopes()->toBase()->count();
         }
 
         return $this->counts[$key];

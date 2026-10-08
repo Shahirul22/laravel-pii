@@ -552,3 +552,84 @@ namespace {
         expect($row->status)->toBe('a');
     });
 }
+
+namespace {
+    use Illuminate\Database\Eloquent\Model;
+    use Illuminate\Support\Facades\DB;
+    use Illuminate\Support\Facades\Schema;
+    use Shahirul22\LaravelPiiSanitizer\RunOptions;
+    use Shahirul22\LaravelPiiSanitizer\SanitizationRunner;
+    use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+
+    class PhNullableCode extends Model
+    {
+        protected $table = 'ph_nullable_codes';
+
+        protected $guarded = [];
+
+        public $timestamps = false;
+    }
+
+    class PhNullableCodeSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['email' => fn ($value) => 'clean-'.$value];
+        }
+    }
+
+    it('sanitizes every row of a table whose only unique index is on a nullable column holding NULLs (BUG-28)', function () {
+        Schema::create('ph_nullable_codes', function ($table) {
+            $table->string('code')->nullable()->unique();
+            $table->string('ref');
+            $table->string('email');
+        });
+
+        // One NULL only: the uniqueness probe groups NULLs together, so two
+        // of them would hide a missing NOT NULL check.
+        DB::table('ph_nullable_codes')->insert(['code' => null, 'ref' => 'r1', 'email' => 'a@real.test']);
+        DB::table('ph_nullable_codes')->insert(['code' => 'b', 'ref' => 'r2', 'email' => 'b@real.test']);
+        DB::table('ph_nullable_codes')->insert(['code' => 'c', 'ref' => 'r3', 'email' => 'c@real.test']);
+        DB::table('ph_nullable_codes')->insert(['code' => 'd', 'ref' => 'r4', 'email' => 'd@real.test']);
+
+        config()->set('pii.sanitizers', [PhNullableCode::class => PhNullableCodeSanitizer::class]);
+        config()->set('pii.models', [PhNullableCode::class]);
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 3));
+
+        expect($report->failed())->toBeFalse();
+        expect($report->models[0]->rowsSanitized())->toBe(4);
+        expect(DB::table('ph_nullable_codes')->orderBy('ref')->pluck('email')->all())
+            ->toBe(['clean-a@real.test', 'clean-b@real.test', 'clean-c@real.test', 'clean-d@real.test']);
+    });
+
+    it('pages a composite key with a row-value filter on SQLite (BUG-20)', function () {
+        foreach (range(1, 3) as $org) {
+            foreach (range(1, 3) as $member) {
+                DB::table('ph_memberships')->insert(['org_id' => $org, 'member_id' => $member, 'email' => "o{$org}m{$member}@x.test"]);
+            }
+        }
+
+        config()->set('pii.sanitizers', [PhMembership::class => PhMembershipSanitizer::class]);
+        config()->set('pii.models', [PhMembership::class]);
+
+        $selects = [];
+        DB::listen(function ($query) use (&$selects) {
+            if (str_starts_with(strtolower(trim($query->sql)), 'select') && str_contains($query->sql, 'ph_memberships')) {
+                $selects[] = $query->sql;
+            }
+        });
+
+        $report = app(SanitizationRunner::class)->run(new RunOptions(chunkSize: 4));
+
+        expect($report->failed())->toBeFalse();
+        expect($report->models[0]->rowsSanitized())->toBe(9);
+
+        $paged = array_values(array_filter($selects, fn (string $sql): bool => str_contains($sql, '("org_id", "member_id") > (?, ?)')));
+        expect($paged)->toHaveCount(2);
+
+        foreach ($selects as $sql) {
+            expect(strtolower($sql))->not->toContain(' or ');
+        }
+    });
+}

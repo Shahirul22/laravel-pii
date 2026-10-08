@@ -13,6 +13,10 @@ namespace Shahirul22\LaravelPiiSanitizer;
  * member rather than against the whole value, so a valid multi-member SET
  * value (e.g. "a,c") is not falsely rejected as not matching any single
  * allowed entry.
+ *
+ * $nativeType is the column type exactly as getColumns() reports it (for
+ * example `character varying(100)` on PostgreSQL), or null when unknown. It
+ * is used to cast bound values in the batched UPDATE on PostgreSQL.
  */
 final readonly class ColumnConstraints
 {
@@ -25,5 +29,6 @@ final readonly class ColumnConstraints
         public ?int $maxLength,
         public ?array $allowed,
         public bool $nullable,
+        public ?string $nativeType = null,
     ) {}
 }

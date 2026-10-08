@@ -148,6 +148,9 @@ final class SanitizationRunner
         /** @var array<string, ?PagingKey> $pagingKeyByLabel */
         $pagingKeyByLabel = [];
 
+        /** @var array<string, array<string, string>> $valueTypes */
+        $valueTypes = [];
+
         foreach ($targets as $target) {
             $label = $target['label'];
             $model = $target['model'];
@@ -174,6 +177,11 @@ final class SanitizationRunner
             $pagingKeyByLabel[$label] = $sanitizer === null
                 ? null
                 : $this->pagingKeys->resolve($model, $sanitizer);
+
+            // PostgreSQL only: the type each bound value is cast to in the
+            // batched UPDATE (see BatchUpdateStatement). Empty elsewhere,
+            // so every other driver's SQL is unchanged.
+            $valueTypes[$label] = BatchUpdateStatement::valueTypesFor($model->getConnection()->getDriverName(), $columnConstraints[$label]);
         }
 
         $reports = [];
@@ -204,6 +212,7 @@ final class SanitizationRunner
                     $castColumns[$label],
                     $columnConstraints[$label],
                     $pagingKeyByLabel[$label],
+                    $valueTypes[$label],
                     $options
                 );
                 $reports[] = $modelReport;
@@ -256,8 +265,9 @@ final class SanitizationRunner
     /**
      * @param  list<string>  $castColumns
      * @param  array<string, ColumnConstraints>  $columnConstraints
+     * @param  array<string, string>  $valueTypes
      */
-    private function runModel(string $label, Model $model, ?Sanitizer $sanitizer, array $castColumns, array $columnConstraints, ?PagingKey $pagingKey, RunOptions $options): ModelReport
+    private function runModel(string $label, Model $model, ?Sanitizer $sanitizer, array $castColumns, array $columnConstraints, ?PagingKey $pagingKey, array $valueTypes, RunOptions $options): ModelReport
     {
         $table = $model->getTable();
 
@@ -295,11 +305,11 @@ final class SanitizationRunner
         $index = 0;
 
         $onChunk = function (Collection $rows) use (
-            &$chunks, &$rowsScanned, &$columnCounts, &$index, $sanitizer, $castColumns, $columnConstraints, $options, $label, $table, $expectedChunks, $pagingKey
+            &$chunks, &$rowsScanned, &$columnCounts, &$index, $sanitizer, $castColumns, $columnConstraints, $valueTypes, $options, $label, $table, $expectedChunks, $pagingKey
         ): ?bool {
             $index++;
 
-            $chunk = $this->processChunk($sanitizer, $rows->all(), $castColumns, $columnConstraints, $pagingKey->columns, $index, $options, $columnCounts);
+            $chunk = $this->processChunk($sanitizer, $rows->all(), $castColumns, $columnConstraints, $valueTypes, $pagingKey->columns, $index, $options, $columnCounts);
 
             $chunks[] = $chunk;
             $rowsScanned += $rows->count();
@@ -319,25 +329,31 @@ final class SanitizationRunner
             return null;
         };
 
+        // Every target is read without its global scopes (SoftDeletes
+        // included): a row a scope hides is still a row holding PII, and the
+        // raw-table paths (the batched UPDATE, Keyed originals, uniqueness
+        // seeding, paging probes) already see it. ChunkSizer::countFor()
+        // counts the same way.
+        $query = $model->newQueryWithoutScopes();
+
         if ($pagingKey->isSingle()) {
             $column = $pagingKey->columns[0];
 
             // v1's exact call for the single-int-PK and UUID/string-PK
             // cases (design §Read and write mechanics): chunkById()'s
             // forPageAfterId() uses a > comparison that already works
-            // identically on a lexicographically-ordered string key. The
-            // carve-out below only matters when the single identity column
-            // has a cast/accessor that would make chunkById()'s internal
-            // data_get() read a cast (not raw) value for last_seen — which
-            // never happens for a primary-key or TableRow identity, so this
-            // branch is effectively always the chunkById() path in practice.
-            if ($column === $model->getKeyName() || ! ($model->hasCast($column) || $model->hasGetMutator($column) || $model->hasAttributeGetMutator($column))) {
-                $model->newQuery()->chunkById($size, $onChunk, $column);
+            // identically on a lexicographically-ordered string key. But
+            // chunkById() reads last_seen through data_get(), so a cast or
+            // accessor on the identity column (the primary key included)
+            // would hand it the transformed value, not the stored one; such
+            // a column is paged by key set, which reads the raw attribute.
+            if (! self::readsTransformed($model, $column)) {
+                $query->chunkById($size, $onChunk, $column);
             } else {
-                $this->chunkByKeyset($model->newQuery(), $pagingKey->columns, $size, $onChunk);
+                $this->chunkByKeyset($query, $pagingKey->columns, $size, $onChunk);
             }
         } else {
-            $this->chunkByKeyset($model->newQuery(), $pagingKey->columns, $size, $onChunk);
+            $this->chunkByKeyset($query, $pagingKey->columns, $size, $onChunk);
         }
 
         return new ModelReport(
@@ -355,10 +371,10 @@ final class SanitizationRunner
     /**
      * Keyset pagination on the resolved identity — never OFFSET/LIMIT. Each
      * page is `WHERE (identity) > (last_seen) ORDER BY identity LIMIT n`,
-     * built as the portable expanded predicate
-     * `(a > ?) OR (a = ? AND b > ?) OR ...` (deliberately not row-value/tuple
-     * comparison SQL, since older SQLite builds in the supported range lack
-     * it). See docs/design/engine-hardening/spec §R7 Stability proof: the
+     * built by KeysetPredicate as a row-value comparison `(a, b) > (?, ?)`
+     * on PostgreSQL and SQLite 3.15+, where that is an index range, and as
+     * the expanded predicate `(a > ?) OR (a = ? AND b > ?) OR ...` on every
+     * other driver. See docs/design/engine-hardening/spec §R7 Stability proof: the
      * identity is unique and NOT NULL by construction (PagingKeyResolver),
      * and this run never writes to it (identity ∩ fields() = ∅ is an
      * enforced boot invariant), so every row whose identity was greater than
@@ -380,21 +396,15 @@ final class SanitizationRunner
 
         $lastSeen = null;
 
+        $connection = $query->getModel()->getConnection();
+        $rowValues = count($columns) > 1
+            && KeysetPredicate::supportsRowValues($connection->getDriverName(), (string) $connection->getServerVersion());
+
         while (true) {
             $page = clone $base;
 
             if ($lastSeen !== null) {
-                $page->where(function (Builder $outer) use ($columns, $lastSeen): void {
-                    foreach ($columns as $i => $column) {
-                        $outer->orWhere(function (Builder $branch) use ($columns, $lastSeen, $i, $column): void {
-                            for ($j = 0; $j < $i; $j++) {
-                                $branch->where($columns[$j], '=', $lastSeen[$columns[$j]]);
-                            }
-
-                            $branch->where($column, '>', $lastSeen[$column]);
-                        });
-                    }
-                });
+                KeysetPredicate::apply($page, $columns, $lastSeen, $rowValues);
             }
 
             $rows = $page->limit($size)->get();
@@ -429,10 +439,11 @@ final class SanitizationRunner
      * @param  list<Model>  $rows
      * @param  list<string>  $castColumns
      * @param  array<string, ColumnConstraints>  $columnConstraints
+     * @param  array<string, string>  $valueTypes
      * @param  list<string>  $identityColumns
      * @param  array<string, int>  $columnCounts
      */
-    private function processChunk(Sanitizer $sanitizer, array $rows, array $castColumns, array $columnConstraints, array $identityColumns, int $index, RunOptions $options, array &$columnCounts): ChunkReport
+    private function processChunk(Sanitizer $sanitizer, array $rows, array $castColumns, array $columnConstraints, array $valueTypes, array $identityColumns, int $index, RunOptions $options, array &$columnCounts): ChunkReport
     {
         $rowCount = count($rows);
         $firstKey = $rowCount > 0 ? $this->reportKey($this->identityOf($rows[0], $identityColumns)) : null;
@@ -454,7 +465,7 @@ final class SanitizationRunner
         /** @var array<string, int> $chunkColumnCounts */
         $chunkColumnCounts = [];
 
-        $apply = function () use ($rows, $sanitizer, $castColumns, $columnConstraints, $identityColumns, $connection, $table, $options, &$chunkColumnCounts): void {
+        $apply = function () use ($rows, $sanitizer, $castColumns, $columnConstraints, $valueTypes, $identityColumns, $connection, $table, $options, &$chunkColumnCounts): void {
             /** @var list<array{identity: array<string, mixed>, values: array<string, mixed>}> $rowsToWrite */
             $rowsToWrite = [];
 
@@ -501,7 +512,7 @@ final class SanitizationRunner
             }
 
             if (! $options->dryRun) {
-                $this->batchUpdate($connection, $table, $identityColumns, $rowsToWrite);
+                $this->batchUpdate($connection, $table, $identityColumns, $rowsToWrite, $valueTypes);
             }
         };
 
@@ -564,30 +575,49 @@ final class SanitizationRunner
     }
 
     /**
-     * A row's identity value per column, keyed by column name. For a
-     * single-column identity that is also the model's own primary key, the
-     * value comes from getKey() — keeping v1's exact binding (and the int
-     * firstKey/lastKey shape for an int PK) unchanged. Every other case
-     * reads the raw, un-cast attribute — this must match the identity as it
-     * exists on disk, not as Eloquent might transform it for display (design
-     * §Read and write mechanics).
+     * A row's identity value per column, keyed by column name, always read
+     * from the raw, un-cast attribute — the primary key included. It must
+     * match the identity as it exists on disk, not as a cast or accessor
+     * transforms it (design §Read and write mechanics): getKey() applies
+     * the key's cast, so a batched UPDATE bound to it would match no row.
      *
      * @param  list<string>  $identityColumns
      * @return array<string, mixed>
      */
     private function identityOf(Model $row, array $identityColumns): array
     {
+        $attributes = $row->getAttributes();
         $identity = [];
 
         foreach ($identityColumns as $column) {
-            if (count($identityColumns) === 1 && $column === $row->getKeyName()) {
-                $identity[$column] = $row->getKey();
-            } else {
-                $identity[$column] = $row->getAttributes()[$column];
-            }
+            $identity[$column] = $attributes[$column];
         }
 
         return $identity;
+    }
+
+    /**
+     * Whether getAttribute() on this column returns something other than the
+     * stored value: a get mutator, an Attribute accessor, or a cast. The one
+     * cast that does not count is the implicit key-type cast Eloquent adds
+     * for an incrementing key (getCasts() merges [keyName => keyType]), which
+     * every default model carries and which leaves an integer key unchanged.
+     */
+    private static function readsTransformed(Model $model, string $column): bool
+    {
+        if ($model->hasGetMutator($column) || $model->hasAttributeGetMutator($column)) {
+            return true;
+        }
+
+        if (! $model->hasCast($column)) {
+            return false;
+        }
+
+        $implicitKeyCast = $column === $model->getKeyName()
+            && $model->getIncrementing()
+            && $model->getCasts()[$column] === $model->getKeyType();
+
+        return ! $implicitKeyCast;
     }
 
     /**
@@ -628,8 +658,9 @@ final class SanitizationRunner
      *
      * @param  list<string>  $identityColumns
      * @param  list<array{identity: array<string, mixed>, values: array<string, mixed>}>  $rowsToWrite
+     * @param  array<string, string>  $valueTypes  column => cast type, PostgreSQL only (BatchUpdateStatement::valueTypesFor())
      */
-    private function batchUpdate(Connection $connection, string $table, array $identityColumns, array $rowsToWrite): void
+    private function batchUpdate(Connection $connection, string $table, array $identityColumns, array $rowsToWrite, array $valueTypes): void
     {
         $columns = array_keys($rowsToWrite[0]['values']);
         $columnCount = count($columns);
@@ -642,108 +673,10 @@ final class SanitizationRunner
         $rowsPerSubBatch = max(1, intdiv(self::MAX_BOUND_PARAMETERS_PER_STATEMENT, $parametersPerRow));
 
         foreach (array_chunk($rowsToWrite, $rowsPerSubBatch) as $subBatch) {
-            $this->batchUpdateStatement($connection, $table, $identityColumns, $columns, $subBatch);
-        }
-    }
-
-    /**
-     * @param  list<string>  $identityColumns
-     * @param  list<string>  $columns
-     * @param  list<array{identity: array<string, mixed>, values: array<string, mixed>}>  $rowsToWrite
-     */
-    private function batchUpdateStatement(Connection $connection, string $table, array $identityColumns, array $columns, array $rowsToWrite): void
-    {
-        $grammar = $connection->getQueryGrammar();
-        $wrappedTable = $grammar->wrapTable($table);
-
-        if (count($identityColumns) === 1) {
-            $id = $identityColumns[0];
-            $wrappedId = $grammar->wrap($id);
-
-            $setClauses = [];
-            $bindings = [];
-
-            foreach ($columns as $column) {
-                $whenClauses = [];
-
-                foreach ($rowsToWrite as $row) {
-                    $whenClauses[] = 'WHEN ? THEN ?';
-                    $bindings[] = $row['identity'][$id];
-                    $bindings[] = self::bindableValue($row['values'][$column]);
-                }
-
-                $setClauses[] = sprintf(
-                    '%s = CASE %s %s END',
-                    $grammar->wrap($column),
-                    $wrappedId,
-                    implode(' ', $whenClauses)
-                );
-            }
-
-            $idValues = array_map(fn (array $row): mixed => $row['identity'][$id], $rowsToWrite);
-            $placeholders = implode(', ', array_fill(0, count($idValues), '?'));
-
-            $sql = sprintf(
-                'UPDATE %s SET %s WHERE %s IN (%s)',
-                $wrappedTable,
-                implode(', ', $setClauses),
-                $wrappedId,
-                $placeholders
-            );
-
-            $bindings = [...$bindings, ...$idValues];
+            [$sql, $bindings] = BatchUpdateStatement::build($connection->getQueryGrammar(), $table, $identityColumns, $columns, $subBatch, $valueTypes);
 
             $connection->update($sql, $bindings);
-
-            return;
         }
-
-        $setClauses = [];
-        $bindings = [];
-
-        foreach ($columns as $column) {
-            $whenClauses = [];
-
-            foreach ($rowsToWrite as $row) {
-                $conditions = [];
-
-                foreach ($identityColumns as $idColumn) {
-                    $conditions[] = $grammar->wrap($idColumn).' = ?';
-                    $bindings[] = $row['identity'][$idColumn];
-                }
-
-                $whenClauses[] = 'WHEN '.implode(' AND ', $conditions).' THEN ?';
-                $bindings[] = self::bindableValue($row['values'][$column]);
-            }
-
-            $setClauses[] = sprintf(
-                '%s = CASE %s END',
-                $grammar->wrap($column),
-                implode(' ', $whenClauses)
-            );
-        }
-
-        $orClauses = [];
-
-        foreach ($rowsToWrite as $row) {
-            $conditions = [];
-
-            foreach ($identityColumns as $idColumn) {
-                $conditions[] = $grammar->wrap($idColumn).' = ?';
-                $bindings[] = $row['identity'][$idColumn];
-            }
-
-            $orClauses[] = '('.implode(' AND ', $conditions).')';
-        }
-
-        $sql = sprintf(
-            'UPDATE %s SET %s WHERE %s',
-            $wrappedTable,
-            implode(', ', $setClauses),
-            implode(' OR ', $orClauses)
-        );
-
-        $connection->update($sql, $bindings);
     }
 
     /**

@@ -15,13 +15,15 @@ use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UnsupportedCastException;
+use Shahirul22\LaravelPiiSanitizer\Values\KeyedValueRegistry;
 
 /**
  * Walks every configured model (and model-less table target) in
  * automatically-sized (or manually overridden) chunks, writing each chunk's
  * replacement values inside a single transaction, and never throws for a
- * mid-chunk failure — see docs/design/execution-engine-and-safety/execution-engine-spec
- * and docs/design/engine-hardening/spec §R7.
+ * mid-chunk failure — see docs/design/execution-engine-and-safety/execution-engine-spec,
+ * docs/design/engine-hardening/spec §R7 and, for Keyed registration,
+ * docs/design/value-generation-primitives/spec §R1.2.
  */
 final class SanitizationRunner
 {
@@ -35,6 +37,7 @@ final class SanitizationRunner
         private readonly ColumnConstraintInspector $constraintInspector,
         private readonly ConstraintValidator $validator,
         private readonly PagingKeyResolver $pagingKeys,
+        private readonly KeyedValueRegistry $keyed,
     ) {}
 
     /** Walks every configured target; never throws for a mid-chunk failure. */
@@ -43,6 +46,7 @@ final class SanitizationRunner
         $this->guard->assertRunnable($options);
 
         $this->generator->reset();
+        $this->keyed->reset();
         $this->sizer->reset();
 
         $rawModelClasses = $options->models ?? config('pii.models', []);
@@ -138,6 +142,13 @@ final class SanitizationRunner
             $label = $target['label'];
             $model = $target['model'];
             $sanitizer = $target['sanitizer'];
+
+            // Keyed values (value-generation-primitives spec, R1.1/R1.2): the
+            // key check, shape-signature check and binding/originals
+            // collection all happen here, before any row is read.
+            if ($sanitizer !== null) {
+                $this->keyed->register($model, $sanitizer);
+            }
 
             $castColumns[$label] = $sanitizer === null
                 ? []

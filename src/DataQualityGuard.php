@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidConfigurationException;
+use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
 /**
  * Fail-fast validation of a Sanitizer's categorical() declaration (R4.2),
@@ -41,6 +42,10 @@ class DataQualityGuard implements DataQualityGuardContract
         foreach ($categorical as $column) {
             if (! array_key_exists($column, $fields)) {
                 throw InvalidCategoricalColumnException::notDeclared($modelClass, $column, $sanitizer::class);
+            }
+
+            if ($fields[$column] instanceof Keyed) {
+                throw InvalidCategoricalColumnException::keyed($modelClass, $column, $sanitizer::class);
             }
         }
 

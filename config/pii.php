@@ -80,4 +80,23 @@ return [
         'target_chunks' => 20,
     ],
 
+    /*
+    |--------------------------------------------------------------------
+    | Keyed generation
+    |--------------------------------------------------------------------
+    |
+    | The secret key behind the Keyed value-definition, which maps the same
+    | input to the same replacement across rows, columns and runs. Read only
+    | from the environment (PII_SANITIZER_KEY) and never committed. Either a
+    | raw string or "base64:"-prefixed (decoded like APP_KEY), and at least
+    | 32 bytes after decoding. It is only required when a sanitizer declares
+    | a Keyed field; a run with no Keyed field never reads it. Treat it like
+    | the PII it protects: anyone holding the key can recover low-entropy
+    | inputs (NRIC, phone numbers) by enumeration.
+    |
+    */
+    'keyed' => [
+        'key' => env('PII_SANITIZER_KEY'),
+    ],
+
 ];

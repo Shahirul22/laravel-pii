@@ -6,11 +6,13 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
 use Shahirul22\LaravelPiiSanitizer\EnvironmentGuard;
 use Shahirul22\LaravelPiiSanitizer\PiiSanitizerServiceProvider;
 use Shahirul22\LaravelPiiSanitizer\SanitizerResolver;
+use Shahirul22\LaravelPiiSanitizer\Values\KeyedResolver;
+use Shahirul22\LaravelPiiSanitizer\Values\KeyedValueRegistry;
 
 it('exposes exactly the design-fixed top-level config keys', function () {
     $config = require __DIR__.'/../../config/pii.php';
 
-    expect(array_keys($config))->toBe(['sanitizers', 'models', 'tables', 'environments', 'chunk']);
+    expect(array_keys($config))->toBe(['sanitizers', 'models', 'tables', 'environments', 'chunk', 'keyed']);
     expect($config)->not->toHaveKey('connection');
     expect($config['tables'])->toBe([]);
 });
@@ -57,4 +59,15 @@ it('binds SanitizerResolverContract as a singleton, consistent with its singleto
 
     expect($first)->toBeInstanceOf(SanitizerResolver::class);
     expect($first)->toBe($second);
+});
+
+it('exposes the keyed block with only a key entry', function () {
+    $config = require __DIR__.'/../../config/pii.php';
+
+    expect(array_keys($config['keyed']))->toBe(['key']);
+});
+
+it('binds KeyedValueRegistry and KeyedResolver as singletons', function () {
+    expect(app(KeyedValueRegistry::class))->toBe(app(KeyedValueRegistry::class));
+    expect(app(KeyedResolver::class))->toBe(app(KeyedResolver::class));
 });

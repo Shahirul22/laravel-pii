@@ -9,22 +9,29 @@ use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
 /**
  * Resolves a field's value-definition into a concrete replacement value.
  *
- * A value-definition is one of four types, dispatched by PHP type/shape in
+ * A value-definition is one of five types, dispatched by PHP type/shape in
  * this order:
  *  1. Closure — invoked directly with (value, faker, row).
- *  2. Invokable class-string implementing ValueGenerator — resolved via the
+ *  2. ValueGenerator instance (e.g. Keyed::…, Format::…, Malaysia::…) —
+ *     invoked directly with (value, faker, row). Checked before the static
+ *     fallback so an object is never returned unchanged as a "static" value.
+ *  3. Invokable class-string implementing ValueGenerator — resolved via the
  *     container and invoked with (value, faker, row). Checked before the
  *     Faker-shorthand branch so a ValueGenerator class name is never
  *     mistaken for a Faker method name.
- *  3. Faker method-name shorthand string — invoked on the given Faker
+ *  4. Faker method-name shorthand string — invoked on the given Faker
  *     instance.
- *  4. Anything else — returned unchanged as a static value (the fallback).
+ *  5. Anything else — returned unchanged as a static value (the fallback).
  */
 class ValueDefinitionResolver
 {
     public function resolve(mixed $definition, mixed $currentValue, Generator $faker, Model $row): mixed
     {
         if ($definition instanceof \Closure) {
+            return $definition($currentValue, $faker, $row);
+        }
+
+        if ($definition instanceof ValueGenerator) {
             return $definition($currentValue, $faker, $row);
         }
 
@@ -47,14 +54,19 @@ class ValueDefinitionResolver
      * Whether $definition is static: determinable in full from the
      * Sanitizer declaration alone, independent of row data. Mirrors
      * resolve()'s own dispatch order exactly — a Closure, a ValueGenerator
-     * class-string, or a resolvable Faker-formatter string are all
-     * per-row (false); anything else falls through to resolve()'s
-     * unchanged-fallback branch and is static (true). See
+     * instance, a ValueGenerator class-string, or a resolvable
+     * Faker-formatter string are all per-row (false); anything else falls
+     * through to resolve()'s unchanged-fallback branch and is static (true).
+     * See
      * docs/design/engine-hardening/spec §R6 Boot vs per-row split (R6.3).
      */
     public function isStatic(mixed $definition, Generator $faker): bool
     {
         if ($definition instanceof \Closure) {
+            return false;
+        }
+
+        if ($definition instanceof ValueGenerator) {
             return false;
         }
 

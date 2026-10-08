@@ -3,6 +3,7 @@
 namespace {
     use Illuminate\Database\Eloquent\Model;
     use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+    use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
     class DqGuardUser extends Model
     {
@@ -57,6 +58,19 @@ namespace {
         public function fields(): array
         {
             return ['email' => 'safeEmail'];
+        }
+    }
+
+    class DqGuardKeyedCategoricalSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['status' => Keyed::pattern('status', '???')];
+        }
+
+        public function categorical(): array
+        {
+            return ['status'];
         }
     }
 
@@ -177,6 +191,22 @@ namespace {
         } catch (InvalidConfigurationException $exception) {
             expect($exception->getMessage())->toContain(DqGuardNotAModel::class);
             expect($exception->getMessage())->toContain('not a valid Eloquent model class');
+        }
+    });
+
+    it('rejects a Keyed column that is also categorical', function () {
+        Schema::create('dq_guard_users', function ($table) {
+            $table->id();
+            $table->string('status')->nullable();
+        });
+
+        try {
+            dqGuard()->assertValid(new DqGuardKeyedCategoricalSanitizer, DqGuardUser::class);
+
+            test()->fail('Expected InvalidCategoricalColumnException to be thrown.');
+        } catch (InvalidCategoricalColumnException $exception) {
+            expect($exception->getMessage())->toContain('uses a Keyed value-definition');
+            expect($exception->getMessage())->toContain('status');
         }
     });
 }

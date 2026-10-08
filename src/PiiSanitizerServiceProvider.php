@@ -2,12 +2,16 @@
 
 namespace Shahirul22\LaravelPiiSanitizer;
 
+use Faker\Generator;
 use Illuminate\Support\ServiceProvider;
 use Shahirul22\LaravelPiiSanitizer\Commands\SanitizeCommand;
 use Shahirul22\LaravelPiiSanitizer\Contracts\DataQualityGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\EnvironmentGuardContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SanitizerResolverContract;
 use Shahirul22\LaravelPiiSanitizer\Contracts\SchemaGuardContract;
+use Shahirul22\LaravelPiiSanitizer\Values\KeyedResolver;
+use Shahirul22\LaravelPiiSanitizer\Values\KeyedValueRegistry;
+use Shahirul22\LaravelPiiSanitizer\Values\Malaysia\MalaysiaProvider;
 
 class PiiSanitizerServiceProvider extends ServiceProvider
 {
@@ -27,10 +31,24 @@ class PiiSanitizerServiceProvider extends ServiceProvider
         $this->app->singleton(ColumnConstraintInspector::class);
         $this->app->singleton(ConstraintValidator::class);
         $this->app->singleton(PagingKeyResolver::class);
+        $this->app->singleton(KeyedValueRegistry::class);
+        $this->app->singleton(KeyedResolver::class);
 
         $this->app->singleton(ChunkSizer::class);
         $this->app->bind(SanitizationRunner::class);
         $this->app->singleton(EnvironmentGuardContract::class, EnvironmentGuard::class);
+
+        // Malaysia shorthand (value-generation-primitives spec, R4.5): additive
+        // formatter names on the container's Faker, never a locale change. Laravel
+        // caches the built Faker per locale process-wide, so a later container gets
+        // the same, already-extended instance; the guard keeps it single.
+        $this->app->afterResolving(Generator::class, function (Generator $faker): void {
+            self::addMalaysiaProvider($faker);
+        });
+
+        if ($this->app->resolved(Generator::class)) {
+            self::addMalaysiaProvider($this->app->make(Generator::class));
+        }
     }
 
     public function boot(): void
@@ -44,5 +62,16 @@ class PiiSanitizerServiceProvider extends ServiceProvider
                 SanitizeCommand::class,
             ]);
         }
+    }
+
+    private static function addMalaysiaProvider(Generator $faker): void
+    {
+        foreach ($faker->getProviders() as $provider) {
+            if ($provider instanceof MalaysiaProvider) {
+                return;
+            }
+        }
+
+        $faker->addProvider(new MalaysiaProvider($faker));
     }
 }

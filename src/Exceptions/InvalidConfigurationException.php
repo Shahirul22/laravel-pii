@@ -31,4 +31,18 @@ final class InvalidConfigurationException extends \RuntimeException
             '[laravel-pii-sanitizer] pii.tables must be a map of table-name => Sanitizer class-name strings.'
         );
     }
+
+    public static function missingKeyedKey(): self
+    {
+        return new self(
+            '[laravel-pii-sanitizer] A Keyed value-definition is declared but no usable key is configured. Set PII_SANITIZER_KEY (read via pii.keyed.key) to at least 32 bytes, raw or "base64:"-prefixed.'
+        );
+    }
+
+    public static function keyedNamespaceShapeMismatch(string $namespace): self
+    {
+        return new self(
+            "[laravel-pii-sanitizer] Keyed namespace \"{$namespace}\" is declared with different shapes. Every Keyed::using() or Keyed::pattern() in one namespace must use an identical shape and parameters, or the same input would map to different values."
+        );
+    }
 }

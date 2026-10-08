@@ -4,9 +4,11 @@ namespace Shahirul22\LaravelPiiSanitizer;
 
 use Faker\Generator;
 use Illuminate\Database\Eloquent\Model;
+use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidCategoricalColumnException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\InvalidReplacementValueException;
 use Shahirul22\LaravelPiiSanitizer\Exceptions\UniquenessExhaustedException;
+use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
 /**
  * The single seam through which both Phase 4 data-quality mechanisms
@@ -29,6 +31,16 @@ class ReplacementGenerator
      * Replacement values for one row: column => value, keyed exactly by
      * the columns declared in $sanitizer->fields().
      *
+     * A column whose definition is a Keyed value is unique by construction
+     * (KeyedResolver guarantees injectivity and avoids the originals), so it
+     * is never regenerated here: re-rolling a deterministic value cannot
+     * change it. Keyed members of a violated constraint are excluded from the
+     * regenerate set, and a violated constraint left with no non-keyed
+     * declared member fails fast with keyedConflict(). A constraint tuple
+     * holding a NULL keyed member is exempt from the uniqueness bookkeeping,
+     * because a tuple containing NULL never violates a unique index. Non-keyed
+     * columns keep v1's random retry unchanged.
+     *
      * @return array<string, mixed>
      *
      * @throws UniquenessExhaustedException
@@ -42,6 +54,9 @@ class ReplacementGenerator
         $connection = $row->getConnectionName();
         $fields = $sanitizer->fields();
         $declared = array_keys($fields);
+
+        /** @var list<string> $keyed */
+        $keyed = array_keys(array_filter($fields, fn (mixed $definition): bool => $definition instanceof Keyed));
         $categorical = $sanitizer->categorical();
 
         $values = [];
@@ -66,6 +81,10 @@ class ReplacementGenerator
             $violated = [];
 
             foreach ($constraints as $constraint) {
+                if ($this->hasNullKeyedMember($constraint, $values, $keyed)) {
+                    continue;
+                }
+
                 $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
                 if ($this->tracker->isTaken($table, $constraint, $tuple, $connection)) {
@@ -75,6 +94,10 @@ class ReplacementGenerator
 
             if ($violated === []) {
                 foreach ($constraints as $constraint) {
+                    if ($this->hasNullKeyedMember($constraint, $values, $keyed)) {
+                        continue;
+                    }
+
                     $tuple = $this->tupleFor($constraint, $values, $declared, $row);
 
                     $this->tracker->claim($table, $constraint, $tuple, $connection);
@@ -85,9 +108,17 @@ class ReplacementGenerator
 
             $lastViolated = $violated[array_key_last($violated)];
 
+            foreach ($violated as $constraint) {
+                if (array_diff(array_intersect($constraint, $declared), $keyed) === []) {
+                    throw UniquenessExhaustedException::keyedConflict($modelClass, array_values(array_intersect($constraint, $declared)), $sanitizer::class, $table);
+                }
+            }
+
             $columnsToRegenerate = array_values(array_unique(array_merge(
                 ...array_map(fn (array $constraint): array => array_intersect($constraint, $declared), $violated)
             )));
+
+            $columnsToRegenerate = array_values(array_diff($columnsToRegenerate, $keyed));
 
             foreach ($columnsToRegenerate as $column) {
                 $values[$column] = $this->generateValue($column, $fields, $row, $faker, $categorical, $table, $modelClass, $connection);
@@ -128,7 +159,16 @@ class ReplacementGenerator
             }
         }
 
-        $value = $this->resolver->resolve($fields[$column], $row->getAttribute($column), $faker, $row);
+        try {
+            $value = $this->resolver->resolve($fields[$column], $row->getAttribute($column), $faker, $row);
+        } catch (InvalidReplacementValueException $e) {
+            // A ValueGenerator instance cannot know its column, so name it here.
+            if ($fields[$column] instanceof ValueGenerator) {
+                throw InvalidReplacementValueException::inColumn($column, $e);
+            }
+
+            throw $e;
+        }
 
         if (! $this->isWritableValue($value)) {
             throw InvalidReplacementValueException::unsupportedType($column, get_debug_type($value));
@@ -149,6 +189,25 @@ class ReplacementGenerator
             || is_scalar($value)
             || is_array($value)
             || $value instanceof \UnitEnum;
+    }
+
+    /**
+     * Whether the constraint holds a Keyed member whose generated value is
+     * NULL: such a tuple never violates a unique index, so it is skipped.
+     *
+     * @param  list<string>  $constraint
+     * @param  array<string, mixed>  $values
+     * @param  list<string>  $keyed
+     */
+    private function hasNullKeyedMember(array $constraint, array $values, array $keyed): bool
+    {
+        foreach ($constraint as $member) {
+            if (in_array($member, $keyed, true) && ($values[$member] ?? null) === null) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -5,6 +5,7 @@ namespace {
     use Illuminate\Database\Eloquent\Model;
     use Shahirul22\LaravelPiiSanitizer\Contracts\ValueGenerator;
     use Shahirul22\LaravelPiiSanitizer\Sanitizer;
+    use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
     class RgUser extends Model
     {
@@ -111,6 +112,38 @@ namespace {
         }
     }
 
+    class RgKeyedDigitSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['email' => Keyed::pattern('rg-digit', '#')];
+        }
+    }
+
+    class RgKeyedFloatSanitizer extends Sanitizer
+    {
+        public function fields(): array
+        {
+            return ['note' => Keyed::pattern('rg-note', '###')];
+        }
+    }
+
+    /** A mixed composite: 'tenant' is keyed, 'slug' is drawn from a pool of two. */
+    class RgKeyedCompositeSanitizer extends Sanitizer
+    {
+        private int $drawn = 0;
+
+        public function fields(): array
+        {
+            return [
+                'tenant' => Keyed::pattern('rg-tenant', '???'),
+                'slug' => function () {
+                    return ['dup', 'fresh'][min($this->drawn++, 1)];
+                },
+            ];
+        }
+    }
+
     /**
      * A sanitizer whose declared columns are each drawn, in order, from a
      * fixed pool of candidate values — deterministic and index-tracked on
@@ -161,6 +194,7 @@ namespace {
     use Shahirul22\LaravelPiiSanitizer\UniqueColumnInspector;
     use Shahirul22\LaravelPiiSanitizer\UniqueValueTracker;
     use Shahirul22\LaravelPiiSanitizer\ValueDefinitionResolver;
+    use Shahirul22\LaravelPiiSanitizer\Values\Keyed;
 
     beforeEach(function () {
         Schema::create('rg_users', function ($table) {
@@ -471,5 +505,49 @@ namespace {
         }
 
         expect($sawPending)->toBeTrue();
+    });
+
+    it('fails fast with keyedConflict instead of retrying a keyed column', function () {
+        config()->set('pii.keyed.key', str_repeat("\x01", 32));
+
+        for ($i = 0; $i <= 9; $i++) {
+            DB::table('rg_users')->insert(['email' => (string) $i]);
+        }
+
+        try {
+            rgGenerator()->forRow(new RgKeyedDigitSanitizer, new RgUser(['email' => 'someone']), Factory::create());
+
+            test()->fail('Expected UniquenessExhaustedException to be thrown.');
+        } catch (UniquenessExhaustedException $exception) {
+            expect($exception->getMessage())->toContain('no non-keyed column left to regenerate');
+            expect($exception->getMessage())->not->toContain('after 100 attempts');
+        }
+    });
+
+    it('names the column when a keyed input is unsupported', function () {
+        config()->set('pii.keyed.key', str_repeat("\x01", 32));
+
+        try {
+            rgGenerator()->forRow(new RgKeyedFloatSanitizer, new RgUser(['email' => 'e@x.test', 'note' => 1.5]), Factory::create());
+
+            test()->fail('Expected InvalidReplacementValueException to be thrown.');
+        } catch (InvalidReplacementValueException $exception) {
+            expect($exception->getMessage())->toContain('$note');
+            expect($exception->getMessage())->toContain('float');
+            expect($exception->getPrevious())->toBeInstanceOf(InvalidReplacementValueException::class);
+        }
+    });
+
+    it('retries only the non-keyed member of a mixed composite constraint', function () {
+        config()->set('pii.keyed.key', str_repeat("\x01", 32));
+
+        $faker = Factory::create();
+        $keyed = Keyed::pattern('rg-tenant', '???')('t-1', $faker, new RgPair);
+
+        DB::table('rg_pairs')->insert(['tenant' => $keyed, 'slug' => 'dup']);
+
+        $result = rgGenerator()->forRow(new RgKeyedCompositeSanitizer, new RgPair(['tenant' => 't-1', 'slug' => 'orig']), $faker);
+
+        expect($result)->toBe(['tenant' => $keyed, 'slug' => 'fresh']);
     });
 }

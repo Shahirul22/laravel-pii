@@ -32,6 +32,16 @@ namespace {
     {
         case Active = 'active';
     }
+
+    class VdrSuffixInstanceGenerator implements ValueGenerator
+    {
+        public function __construct(private readonly string $suffix) {}
+
+        public function __invoke(mixed $value, Generator $faker, Model $row): mixed
+        {
+            return ((string) $value).$this->suffix;
+        }
+    }
 }
 
 namespace {
@@ -186,5 +196,28 @@ namespace {
         expect($resolver->isStatic(true, $faker))->toBeTrue();
         expect($resolver->isStatic(['a' => 1], $faker))->toBeTrue();
         expect($resolver->isStatic(VdrStaticEnum::Active, $faker))->toBeTrue();
+    });
+
+    it('resolves a ValueGenerator instance by invoking it with (value, faker, row)', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = Factory::create();
+        $row = new VdrFakeRow;
+
+        expect($resolver->resolve(new VdrSuffixInstanceGenerator('-x'), 'abc', $faker, $row))->toBe('abc-x');
+    });
+
+    it('isStatic() returns false for a ValueGenerator instance', function () {
+        $resolver = new ValueDefinitionResolver;
+
+        expect($resolver->isStatic(new VdrSuffixInstanceGenerator('-x'), app(Generator::class)))->toBeFalse();
+    });
+
+    it('checks the instance branch before the static fallback', function () {
+        $resolver = new ValueDefinitionResolver;
+        $faker = Factory::create();
+        $row = new VdrFakeRow;
+
+        expect($resolver->resolve(new VdrSuffixInstanceGenerator('-x'), 'abc', $faker, $row))
+            ->not->toBeInstanceOf(VdrSuffixInstanceGenerator::class);
     });
 }

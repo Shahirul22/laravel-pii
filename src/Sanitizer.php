@@ -13,6 +13,7 @@ abstract class Sanitizer
      * A value-definition is one of:
      *  - a static value (any scalar, array, enum, null)
      *  - a Closure: fn(mixed $value, \Faker\Generator $faker, Model $row): mixed
+     *  - a ValueGenerator instance, e.g. Keyed::…, Format::…, Malaysia::…
      *  - a class-string implementing ValueGenerator
      *  - a Faker method-name string (e.g. 'email', 'name')
      *
